@@ -166,12 +166,21 @@ st.caption("Complete new authentication with E*TRADE")
 if st.button("Initiate OAuth Flow", use_container_width=True, type="primary", key="initiate_oauth"):
     with st.spinner("Initiating OAuth flow..."):
         result = oauth_service.initiate_oauth_flow()
-        
-        if result['success']:
+
+        # Support both str return (auth_url) and dict {success, auth_url}
+        auth_url = None
+        if isinstance(result, dict):
+            auth_url = result.get('auth_url')
+            success = result.get('success', bool(auth_url))
+        else:
+            auth_url = result
+            success = bool(auth_url)
+
+        if success:
             st.success("✅ OAuth flow initiated!")
-            
+
             # Store auth URL in session
-            st.session_state.auth_url = result['auth_url']
+            st.session_state.auth_url = auth_url
             st.session_state.oauth_initiated = True
             
             # Display authorization URL

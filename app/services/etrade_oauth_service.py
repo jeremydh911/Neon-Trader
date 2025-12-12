@@ -57,6 +57,29 @@ class ETradeOAuthService:
         
         self.tokens_file = '/app/config/.etrade_tokens'
         self.credentials = self._load_credentials()
+
+        # Allow environment variable overrides for credentials and base URL
+        env_consumer_key = os.getenv('ETRADE_CONSUMER_KEY')
+        env_consumer_secret = os.getenv('ETRADE_CONSUMER_SECRET')
+        env_sandbox = os.getenv('ETRADE_SANDBOX')
+        env_base_url = os.getenv('ETRADE_BASE_URL')
+
+        if env_consumer_key and env_consumer_secret:
+            # ensure the structure is present
+            if 'etrade' not in self.credentials:
+                self.credentials['etrade'] = {}
+            if 'oauth' not in self.credentials['etrade']:
+                self.credentials['etrade']['oauth'] = {}
+            self.credentials['etrade']['oauth']['consumer_key'] = env_consumer_key
+            self.credentials['etrade']['oauth']['consumer_secret'] = env_consumer_secret
+            # configure sandbox flag if provided
+            if env_sandbox is not None:
+                self.credentials['etrade']['oauth']['sandbox_mode'] = env_sandbox.lower() in ('1', 'true', 'yes')
+            # configure base URL if provided
+            if env_base_url:
+                if 'api' not in self.credentials['etrade']:
+                    self.credentials['etrade']['api'] = {}
+                self.credentials['etrade']['api']['base_url'] = env_base_url
         self.oauth = None
         self.client = None
         self.is_authenticated = False
@@ -121,16 +144,68 @@ class ETradeOAuthService:
                     callback_url='oob'  # Out of Band - user enters verification code manually
                 )
 
+                # Determine sandbox / production endpoints
+                oauth_cfg = self.credentials.get('etrade', {}).get('oauth', {})
+                api_cfg = self.credentials.get('etrade', {}).get('api', {})
+                sandbox_mode = oauth_cfg.get('sandbox_mode', False)
+                env_sandbox = os.getenv('ETRADE_SANDBOX')
+                if env_sandbox is not None:
+                    sandbox_mode = env_sandbox.lower() in ('1', 'true', 'yes')
+
+                # Base URL override
+                base_url = api_cfg.get('base_url')
+                request_token_url = oauth_cfg.get('request_token_url')
+                access_token_url = oauth_cfg.get('access_token_url')
+                authorize_url = oauth_cfg.get('authorize_url')
+
+                if base_url and not request_token_url:
+                    request_token_url = base_url.rstrip('/') + '/oauth/request_token'
+                    access_token_url = base_url.rstrip('/') + '/oauth/access_token'
+
+                if not request_token_url:
+                    if sandbox_mode:
+                        request_token_url = 'https://apisb.etrade.com/oauth/request_token'
+                        access_token_url = 'https://apisb.etrade.com/oauth/access_token'
+                    else:
+                        request_token_url = 'https://api.etrade.com/oauth/request_token'
+                        access_token_url = 'https://api.etrade.com/oauth/access_token'
+
+                if not authorize_url:
+                    authorize_url = 'https://us.etrade.com/e/t/etws/authorize'
+
+                # set attributes on oauth instance if supported by library
+                try:
+                    self.oauth.req_token_url = request_token_url
+                    self.oauth.access_token_url = access_token_url
+                    self.oauth.authorize_url = authorize_url
+                except Exception:
+                    pass
+
                 # Get request token
                 request_token = self.oauth.get_request_token()
                 logger.info("✅ Request token obtained")
+                # pyetrade may return a full URL; prefer the raw token value if available
+                token_value = getattr(self.oauth, 'resource_owner_key', None) or getattr(self.oauth, 'oauth_token', None) or request_token
 
                 # Generate authorization URL
                 auth_url = self.oauth.auth_token_url
+                # Guard: if the library incorrectly returns the request_token endpoint
+                # (e.g., when misconfigured), compute a correct user-facing authorize URL
+                # using the request_token and the consumer key.
+                if auth_url and ('/oauth/request_token' in auth_url or '/oauth/access_token' in auth_url or 'token=' not in auth_url):
+                    try:
+                        consumer_key = self.credentials['etrade']['oauth']['consumer_key']
+                        # Use E*TRADE's web authorization endpoint (default)
+                        # For sandbox, the web host is the same; token/key params are required
+                        web_authorize = 'https://us.etrade.com/e/t/etws/authorize'
+                        auth_url = f"{web_authorize}?key={consumer_key}&token={token_value}"
+                        logger.info(f"🔧 Rebuilt authorization URL from request token: {auth_url}")
+                    except Exception:
+                        logger.warning('⚠️ Could not rebuild authorization URL; falling back to provided value')
                 logger.info(f"✅ Authorization URL generated: {auth_url}")
 
                 # Store request token for later
-                self.request_token = request_token
+                self.request_token = token_value
                 
                 return auth_url
 

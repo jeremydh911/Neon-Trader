@@ -106,22 +106,33 @@ with st.sidebar:
         if st.button("🔗 Start OAuth Flow", use_container_width=True, key="start_oauth"):
             with st.spinner("Initiating OAuth flow..."):
                 try:
-                    request_token_url = oauth_service.initiate_oauth_flow()
-                    if request_token_url:
+                    auth_url = oauth_service.initiate_oauth_flow()
+                    if auth_url:
                         st.success("✅ OAuth flow initiated!")
-                        st.markdown(f"""
+                        st.markdown("""
                         ### Step 1: Open Authorization URL
-                        
-                        [Click here to authorize]({request_token_url})
-                        
-                        Or copy and paste this URL in your browser:
-                        ```
-                        {request_token_url}
-                        ```
-                        
-                        After authorizing, you'll get a verification code.
+
                         """)
-                        st.session_state.oauth_url = request_token_url
+
+                        # Defensive: avoid showing a request_token endpoint URL to the user
+                        if '/oauth/request_token' in auth_url:
+                            st.warning('⚠️ The authorization URL looks incorrect (points at the request_token endpoint).')
+                            st.code(auth_url, language='text')
+                            # Try to reconstruct a better URL for the user
+                            try:
+                                consumer_key = oauth_service.credentials['etrade']['oauth']['consumer_key']
+                                web_authorize = 'https://us.etrade.com/e/t/etws/authorize'
+                                corrected_url = f"{web_authorize}?key={consumer_key}&token={oauth_service.request_token}"
+                                st.markdown(f"[Try this authorization link instead]({corrected_url})")
+                            except Exception:
+                                st.info('Please clear session and try again, or use the callback flow.')
+                        else:
+                            st.markdown(f"[Click here to authorize]({auth_url})")
+
+                        st.markdown("Or copy and paste this URL in your browser:")
+                        st.code(auth_url, language='text')
+                        st.markdown("After authorizing, you'll get a verification code.")
+                        st.session_state.oauth_url = auth_url
                     else:
                         st.error("❌ Failed to initiate OAuth flow")
                 except Exception as e:

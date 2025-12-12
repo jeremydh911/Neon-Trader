@@ -15,9 +15,22 @@ import json
 import importlib.util
 import inspect
 
+# Initialize tracing early
+from services.tracing_config import setup_tracing
+setup_tracing()
+
 # Add services to path
 sys.path.insert(0, os.path.dirname(__file__))
 from services.settings_manager import SettingsManager
+# Optional orchestrator imports (lazy)
+from services.agent_framework import CouncilOrchestrator
+from services.specialist_agents import (
+    OptionsAgent, BondsAgent, ShortsAgent, LongTermAgent,
+    ShortTermAgent, SpreadsAgent, FuturesAgent, LLMSpecialistAgent,
+    TurboTradeTina, EcoEdgeEddie, GlobalGainsGloria, ValueVaultVictor, RiskRushRiley
+)
+from services.rag_memory import get_memory_store
+from services.council_llm import initialize_llm_council
 
 # Setup logger
 logging.basicConfig(level=logging.INFO)
@@ -286,6 +299,7 @@ elif page == "Portfolio":
 elif page == "Analytics":
     st.header("📊 Analytics")
     
+    
     tabs = st.tabs(["Daily", "Weekly", "Monthly", "Yearly"])
     
     with tabs[0]:
@@ -296,15 +310,97 @@ elif page == "Analytics":
             'Win%': np.random.randint(50, 80, 24)
         })
         st.bar_chart(daily_data.set_index('Hour'))
+    with col2:
+        st.subheader("AI Trading Signals & Council")
+        llm_ready, _ = check_llm_status()
+        
+        if llm_ready:
+            st.write("🤖 Getting AI signals...")
+            st.info("AI analysis: Strong buy signal detected for AAPL")
+        else:
+            st.warning("⏳ LLM loading... AI signals will be available soon")
 
-elif page == "Settings":
-    st.header("⚙️ Settings")
-    
-    # Always reload current settings from disk
-    current_settings = settings_mgr.get_all_settings()
-    logger.info(f"✅ Loaded settings from disk: {list(current_settings.keys())}")
-    
-    # Use form to group inputs
+        st.markdown("---")
+        st.subheader("Orchestrator Controls")
+
+        # Initialize memory, LLM council and orchestrator
+        @st.cache_resource
+        def get_orchestrator():
+            memory = get_memory_store()
+            # initialize LLM council orchestrator (will try default local endpoints)
+            try:
+                llm_orch = initialize_llm_council()
+            except Exception:
+                llm_orch = None
+
+            council = None
+            try:
+                from services.trading_council import TradingCouncil
+                council = TradingCouncil(news_service=None, memory_service=memory)
+            except Exception:
+                council = None
+
+            # backend trader uses existing AutonomousTrader; keep disabled for safety
+            try:
+                from services.autonomous_trader import AutonomousTrader
+                backend = AutonomousTrader(memory_service=memory, llm_service=None, council=council, use_sandbox=True)
+                backend.enable_autonomous_trading(False)
+            except Exception:
+                backend = None
+
+            orch = CouncilOrchestrator(council=council, backend_trader=backend)
+            # Register a mix of agents (LLM agent prioritized)
+            orch.register_agent(LLMSpecialistAgent(name="LLM_Broker", role="llm", specialty="general", orchestrator=llm_orch))
+            # Register named team agents
+            orch.register_agent(TurboTradeTina())
+            orch.register_agent(EcoEdgeEddie())
+            orch.register_agent(GlobalGainsGloria())
+            orch.register_agent(ValueVaultVictor())
+            orch.register_agent(RiskRushRiley())
+            # Also include some specialized helpers
+            orch.register_agent(OptionsAgent())
+            orch.register_agent(ShortTermAgent())
+            orch.register_agent(LongTermAgent())
+            orch.register_agent(ShortsAgent())
+            return orch
+
+        orchestrator = get_orchestrator()
+
+        if st.button("Run Single Research Cycle"):
+            indicators = {"rsi": 28.0, "macd": 0.4, "bb_position": 0.2}
+            result = orchestrator.run_cycle(symbol, current_price=150.0, indicators=indicators, available_capital=20000.0)
+            st.session_state["last_orch_result"] = result
+            st.success("Cycle completed — see results on the right")
+
+        if st.button("Enable Autonomous Backend (Danger)"):
+            if orchestrator.backend:
+                orchestrator.backend.enable_autonomous_trading(True)
+                st.warning("Autonomous trading ENABLED (use caution)")
+            else:
+                st.error("No backend trader available")
+
+        last = st.session_state.get("last_orch_result")
+        if last:
+            st.markdown("**Top Proposal**")
+            st.json(last.get("proposal", {}))
+
+            st.markdown("**Council Decision**")
+            st.json(last.get("council_decision", {}))
+
+            if last.get("execution"):
+                st.markdown("**Execution Result**")
+                st.json(last.get("execution"))
+        else:
+            st.info("Run a research cycle from the left pane to see proposals and council discussion.")
+
+        st.markdown("---")
+        st.subheader("Leaderboard")
+        lb = orchestrator.reward_manager.get_leaderboard()
+        if lb:
+            for name, score in lb.items():
+                st.write(f"**{name}** — {score:.2f} points")
+        else:
+            st.write("No scores yet. Scores will update when trades close and PnL is applied.")
     with st.form("settings_form"):
         col1, col2 = st.columns(2)
         

@@ -1,0 +1,30 @@
+#!/bin/bash
+# Docker Compose with OpenTelemetry Jaeger for tracing visualization
+
+# Start Jaeger (all-in-one for local testing)
+# This provides:
+# - OTLP gRPC endpoint at localhost:4317
+# - Jaeger UI at http://localhost:16686
+
+version: '3.8'
+
+services:
+  # Existing services...
+  # web, worker_cpu, llm_gpu, mcp_ticker, mcp_chart
+  # (add these to your existing docker-compose.yml)
+
+  # OpenTelemetry Jaeger for tracing visualization
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: neon-trader-jaeger
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver (used by apps)
+      - "16686:16686" # Jaeger UI (http://localhost:16686)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - neon-trader-net
+
+networks:
+  neon-trader-net:
+    driver: bridge

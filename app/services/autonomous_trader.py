@@ -190,6 +190,55 @@ class AutonomousTrader:
         """Set the trading council for trade approval"""
         self.council = council
         logger.info("Trading council assigned to autonomous trader")
+
+    def consult_council(self, symbol: str, action: str, price: float, quantity: int) -> dict:
+        """Convenience wrapper used by BackgroundTrader to get a council decision dict."""
+        try:
+            if self.council and hasattr(self.council, 'discuss_trade'):
+                decision, approved = self.council.discuss_trade(
+                    symbol=symbol,
+                    action=action,
+                    current_price=price,
+                    indicators={},
+                    available_capital=0.0,
+                    market_sentiment="neutral"
+                )
+                if decision:
+                    return {
+                        "approval_percentage": getattr(decision, 'approval_percentage', 100.0),
+                        "final_confidence": getattr(decision, 'final_confidence', 1.0),
+                        "approved": approved
+                    }
+            # Default to auto-approve when no council is set (useful in sandbox/tests)
+            return {"approval_percentage": 100.0, "final_confidence": 1.0, "approved": True}
+        except Exception as e:
+            logger.warning(f"⚠️ consult_council error: {e}")
+            return {"approval_percentage": 0.0, "final_confidence": 0.0, "approved": False}
+
+    def execute_order(self, symbol: str, action: str, qty: int, price: float = None, price_type: str = "MARKET", account_id: str | None = None) -> dict:
+        """Execute an order via the configured broker. Returns an order result dict."""
+        try:
+            side = 'buy' if action.upper() in ('BUY', 'OPEN') else 'sell'
+            if not self.broker:
+                logger.warning("⚠️ No broker configured - cannot execute order")
+                return {"status": "FAILED", "reason": "no_broker"}
+
+            # Broker API: place_order(symbol, qty, side, order_type)
+            result = self.broker.place_order(symbol=symbol, qty=qty, side=side, order_type=(price_type or "market"))
+            if result and isinstance(result, dict):
+                # Normalize success response
+                if result.get('status') in ('filled', 'filled_partial', 'success', 'SUCCESS') or result.get('status') == 'FILLED':
+                    return {"status": "SUCCESS", "order_id": result.get('order_id', result.get('id', None)), "raw": result}
+                # For mock broker, interpret 'status' key or fallback
+                if result.get('status') == 'filled':
+                    return {"status": "SUCCESS", "order_id": result.get('order_id'), "raw": result}
+                # Otherwise return as-is
+                return {"status": result.get('status', 'UNKNOWN'), "raw": result}
+
+            return {"status": "FAILED", "reason": "unexpected_broker_response", "raw": result}
+        except Exception as e:
+            logger.error(f"❌ execute_order error: {e}")
+            return {"status": "FAILED", "reason": str(e)}
     
     def make_trading_decision(
         self, 

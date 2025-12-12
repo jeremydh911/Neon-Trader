@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: neon-trader-web:latest
+    container_name: neon_trader_web
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    command: ["bash", "-lc", "python main.py"]
+    ports:
+      - "8501:8501" # Streamlit app (if used)
+      - "8000:8000" # FastAPI backend
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  worker_cpu:
+    build:
+      context: ./cpu
+      dockerfile: Dockerfile
+    image: neon-trader-worker-cpu:latest
+    container_name: neon_trader_worker_cpu
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    command: ["bash", "-lc", "python -u app/services/simulate_orchestrator.py"]
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  llm_gpu:
+    build:
+      context: ./gpu
+      dockerfile: Dockerfile
+    image: neon-trader-llm-gpu:latest
+    container_name: neon_trader_llm_gpu
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    # Expose common Ollama-like LLM ports for compatibility with existing code
+    ports:
+      - "11434:11434"
+      - "11435:11435"
+      - "11436:11436"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+
+  mcp_ticker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: neon-trader-mcp-ticker:latest
+    container_name: neon_trader_mcp_ticker
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    command: ["bash", "-lc", "uvicorn app.mcp.ticker_service:app --host 0.0.0.0 --port 9001"]
+    ports:
+      - "9001:9001"
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  mcp_chart:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: neon-trader-mcp-chart:latest
+    container_name: neon_trader_mcp_chart
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    command: ["bash", "-lc", "uvicorn app.mcp.chart_service:app --host 0.0.0.0 --port 9002"]
+    ports:
+      - "9002:9002"
+    environment:
+      - PYTHONUNBUFFERED=1

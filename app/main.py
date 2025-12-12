@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 
 from services.etrade_oauth_service import ETradeOAuthService
+from services.funding_service import FundingService
 
 # Page configuration
 st.set_page_config(
@@ -73,6 +74,18 @@ if 'oauth_service' not in st.session_state:
         st.stop()
 
 oauth_service = st.session_state.oauth_service
+
+# Initialize funding service in session state and reload from disk to ensure fresh data
+if 'funding_service' not in st.session_state:
+    try:
+        st.session_state.funding_service = FundingService()
+        try:
+            st.session_state.funding_service.reload()
+        except Exception:
+            # Non-fatal: continue without blocking UI if funding file missing or invalid
+            pass
+    except Exception as e:
+        logger.warning(f"⚠️ Could not initialize FundingService: {e}")
 
 # Sidebar - OAuth Status & Controls
 with st.sidebar:
@@ -194,6 +207,38 @@ with st.sidebar:
         options=["Dashboard", "E*TRADE Dashboard", "Trading Council", "Settings"],
         key="page_selector"
     )
+
+    st.divider()
+    # Funding status and controls
+    st.markdown("### 💸 Funding")
+    try:
+        fs = st.session_state.get('funding_service')
+        if fs:
+            summary = fs.get_balance_summary()
+            allocated = summary.get('allocated_to_portfolio', 0.0)
+            last_update = summary.get('last_update')
+            st.write(f"**Allocated to portfolio:** ${allocated:,.2f}")
+            st.caption(f"Last reload: {last_update}")
+
+            if st.button("🔄 Reload funding", use_container_width=True, key="reload_funding"):
+                try:
+                    new_summary = fs.reload()
+                    # Update session state to show a small visual badge / toast in the UI
+                    st.session_state['funding_last_reload'] = new_summary.get('last_update')
+                    # Show immediate success message
+                    st.success(f"Funding reloaded — Allocated: ${new_summary.get('allocated_to_portfolio', 0.0):,.2f}")
+                    # Also show a compact badge with the last reload time for visual emphasis
+                    try:
+                        last = st.session_state.get('funding_last_reload')
+                        st.markdown(f"<span class='status-badge status-connected'>🔄 Reloaded</span> <small>{last}</small>", unsafe_allow_html=True)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    st.error(f"Failed to reload funding: {e}")
+        else:
+            st.info("Funding service not initialized")
+    except Exception as e:
+        st.error(f"Funding status unavailable: {e}")
 
 # Main content
 st.markdown("""

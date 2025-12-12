@@ -1,0 +1,22 @@
+{
+  "trades": [
+    {
+      "id": "17c0084925d6256ab2c048ca9bd41bf7",
+      "timestamp": "2025-12-12T08:11:16.281763",
+      "symbol": "AAPL",
+      "entry_price": 150.0,
+      "exit_price": 160.0,
+      "quantity": 1.0,
+      "profit_loss": 10.0,
+      "profit_loss_pct": 6.66,
+      "duration_seconds": 0,
+      "market_condition": "neutral",
+      "indicators": {},
+      "reason": "",
+      "success": true
+    }
+  ],
+  "decisions": [],
+  "lessons": [],
+  "created_at": "2025-12-12T08:11:15.848616"
+}

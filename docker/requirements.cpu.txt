@@ -1,0 +1,14 @@
+# CPU worker requirements - keep minimal for orchestration and I/O
+uvicorn
+fastapi
+requests
+numpy
+python-dotenv
+pandas
+scikit-learn
+
+# OpenTelemetry tracing and observability
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation

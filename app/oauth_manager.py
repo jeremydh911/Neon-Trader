@@ -13,6 +13,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from services.etrade_oauth_service import ETradeOAuthService
+from services.etrade_oauth_callback import get_etrade_oauth_callback_flow
+import webbrowser
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -187,6 +190,27 @@ if st.button("Initiate OAuth Flow", use_container_width=True, type="primary", ke
             st.markdown("### 📋 Authorization URL")
             st.markdown("**Please visit this URL to authorize Neon Trader:**")
             st.code(result['auth_url'], language="text")
+
+            st.markdown("### ⚡ Quick: Open & Auto-Complete")
+            st.caption("This will open the browser and capture the callback automatically if possible.")
+            if st.button("🔗 Open in Browser"):
+                try:
+                    callback_flow = get_etrade_oauth_callback_flow(oauth_service=oauth_service, host='localhost', port=8080)
+                    flow_info = callback_flow.get_authorization_flow_info()
+                    if not flow_info['success']:
+                        st.error(f"❌ {flow_info.get('error')}")
+                    else:
+                        auth_url2 = flow_info['authorization_url']
+                        st.info(f"Opening: {auth_url2}")
+                        webbrowser.open(auth_url2)
+                        with st.spinner('Waiting for callback and completing authorization...'):
+                            success = callback_flow.complete_oauth_flow(timeout=300)
+                        if success:
+                            st.success('✅ Authorization completed via callback')
+                        else:
+                            st.error('❌ Authorization failed or timed out')
+                except Exception as e:
+                    st.error(f"❌ Error opening URL: {str(e)}")
             
             st.markdown("### 📌 Instructions:")
             st.markdown("""

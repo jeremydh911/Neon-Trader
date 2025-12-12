@@ -1,0 +1,9 @@
+# Ignore local/secret credentials
+app/config/etrade-credentials.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Streamlit local cache
+app/.streamlit/

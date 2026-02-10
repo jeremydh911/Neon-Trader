@@ -1,0 +1,186 @@
+#!/bin/bash
+# ==============================================================================
+# Pre-commit hook for Neon Trader
+# Enforces file size budgets and code quality before commits
+# ==============================================================================
+
+echo "🔍 Running pre-commit checks..."
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Check if we should skip hooks
+if [ -n "$SKIP_PRECOMMIT" ]; then
+    echo "${YELLOW}⚠️  Skipping pre-commit checks (SKIP_PRECOMMIT set)${NC}"
+    exit 0
+fi
+
+# Track failures
+FAILED=0
+
+# Paths intentionally excluded from quality/security scanning.
+# These are typically archival artifacts, backups, or generated content.
+EXCLUDE_PATH_REGEX='^(archive/|backups/|screenshots/|logs/|instance/|data/|\.venv/|venv/|\.githooks/|\.git/hooks/)'
+
+# ==============================================================================
+# 1. File Size Budget Check
+# ==============================================================================
+echo ""
+echo "📏 Checking file size budgets..."
+if python3 check-size-budget.py; then
+    echo "${GREEN}✅ File size budgets: PASSED${NC}"
+else
+    echo "${RED}❌ File size budgets: FAILED${NC}"
+    echo "   Some files exceed size limits."
+    echo "   Run 'python3 check-size-budget.py' for details."
+    echo "   To bypass (not recommended): SKIP_PRECOMMIT=1 git commit ..."
+    FAILED=1
+fi
+
+# ==============================================================================
+# 2. Python Syntax Check
+# ==============================================================================
+echo ""
+echo "🐍 Checking Python syntax..."
+SYNTAX_ERRORS=0
+
+for file in $(git diff --cached --name-only --diff-filter=ACM | grep '\.py$'); do
+    if echo "$file" | grep -Eq "$EXCLUDE_PATH_REGEX"; then
+        continue
+    fi
+    if [ -f "$file" ]; then
+        python3 -m py_compile "$file" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            echo "${RED}   ❌ Syntax error in: $file${NC}"
+            SYNTAX_ERRORS=$((SYNTAX_ERRORS + 1))
+        fi
+    fi
+done
+
+if [ $SYNTAX_ERRORS -eq 0 ]; then
+    echo "${GREEN}✅ Python syntax: PASSED${NC}"
+else
+    echo "${RED}❌ Python syntax: FAILED ($SYNTAX_ERRORS files with errors)${NC}"
+    FAILED=1
+fi
+
+# ==============================================================================
+# 3. Large Files Warning (>1MB)
+# ==============================================================================
+echo ""
+echo "📊 Checking for large files..."
+LARGE_FILES=0
+
+for file in $(git diff --cached --name-only --diff-filter=ACM); do
+    if [ -f "$file" ]; then
+        SIZE=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
+        if [ $SIZE -gt 1048576 ]; then  # 1MB
+            SIZE_MB=$((SIZE / 1024 / 1024))
+            echo "${YELLOW}   ⚠️  Large file (${SIZE_MB}MB): $file${NC}"
+            LARGE_FILES=$((LARGE_FILES + 1))
+        fi
+    fi
+done
+
+if [ $LARGE_FILES -eq 0 ]; then
+    echo "${GREEN}✅ No large files detected${NC}"
+else
+    echo "${YELLOW}⚠️  Found $LARGE_FILES large file(s)${NC}"
+    echo "   Consider using Git LFS for binary files"
+fi
+
+# ==============================================================================
+# 4. Secrets Detection (Basic)
+# ==============================================================================
+echo ""
+echo "🔐 Checking for potential secrets..."
+SECRETS_FOUND=0
+
+PATTERNS=(
+    "password\s*=\s*['\"][^'\"]+['\"]"
+    "api_key\s*=\s*['\"][^'\"]+['\"]"
+    "secret\s*=\s*['\"][^'\"]+['\"]"
+    "token\s*=\s*['\"][^'\"]+['\"]"
+    "aws_access_key"
+    "private_key"
+)
+
+for file in $(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(py|js|ts|env)$'); do
+    if echo "$file" | grep -Eq "$EXCLUDE_PATH_REGEX"; then
+        continue
+    fi
+    if [ -f "$file" ]; then
+        for pattern in "${PATTERNS[@]}"; do
+            # Only scan newly-added lines in the staged diff to avoid failing
+            # commits due to legacy/test/example content that already existed.
+            if git diff --cached -U0 -- "$file" | grep '^+' | grep -v '^+++' | grep -i -E "$pattern" > /dev/null 2>&1; then
+                echo "${RED}   ⚠️  Possible secret in: $file${NC}"
+                echo "      Pattern matched: $pattern"
+                SECRETS_FOUND=$((SECRETS_FOUND + 1))
+                break
+            fi
+        done
+    fi
+done
+
+if [ $SECRETS_FOUND -eq 0 ]; then
+    echo "${GREEN}✅ No obvious secrets detected${NC}"
+else
+    echo "${RED}❌ Potential secrets detected: $SECRETS_FOUND file(s)${NC}"
+    echo "   Please review and remove sensitive data"
+    echo "   Add to .gitignore or use environment variables"
+    FAILED=1
+fi
+
+# ==============================================================================
+# 5. Trailing Whitespace Check
+# ==============================================================================
+echo ""
+echo "✂️  Checking for trailing whitespace..."
+WHITESPACE_FILES=0
+
+for file in $(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(py|js|ts|md|txt)$'); do
+    if echo "$file" | grep -Eq "$EXCLUDE_PATH_REGEX"; then
+        continue
+    fi
+    if [ -f "$file" ]; then
+        # Check trailing whitespace only in added staged lines.
+        if git diff --cached -U0 -- "$file" | grep '^+' | grep -v '^+++' | grep -nE '[[:space:]]+$' > /dev/null 2>&1; then
+            WHITESPACE_FILES=$((WHITESPACE_FILES + 1))
+        fi
+    fi
+done
+
+if [ $WHITESPACE_FILES -eq 0 ]; then
+    echo "${GREEN}✅ No trailing whitespace${NC}"
+else
+    echo "${YELLOW}⚠️  Found trailing whitespace in $WHITESPACE_FILES file(s)${NC}"
+    echo "   Run 'git diff --cached --check' for details"
+fi
+
+# ==============================================================================
+# Summary
+# ==============================================================================
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+
+if [ $FAILED -eq 0 ]; then
+    echo "${GREEN}✅ All pre-commit checks passed!${NC}"
+    echo "   Proceeding with commit..."
+    exit 0
+else
+    echo "${RED}❌ Pre-commit checks failed!${NC}"
+    echo ""
+    echo "To fix:"
+    echo "  1. Review errors above"
+    echo "  2. Fix issues and re-stage files"
+    echo "  3. Try commit again"
+    echo ""
+    echo "To bypass (NOT RECOMMENDED):"
+    echo "  SKIP_PRECOMMIT=1 git commit ..."
+    echo ""
+    exit 1
+fi

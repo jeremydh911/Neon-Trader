@@ -162,8 +162,8 @@ class ETradeBroker(BrokerConnection):
     def __init__(self, use_sandbox: bool = True):
         super().__init__()
         self.use_sandbox = use_sandbox
-        self.consumer_key = os.getenv('ETRADE_CONSUMER_KEY', '80bcc0efddc3dda1a913359e78353a7a')
-        self.consumer_secret = os.getenv('ETRADE_CONSUMER_SECRET', 'ebcd86fa1cfbd832590f25ad7bf9ca459d1bdd3f1265ea7a89329a1d618971c8')
+        self.consumer_key = os.getenv('ETRADE_CONSUMER_KEY', '')
+        self.consumer_secret = os.getenv('ETRADE_CONSUMER_SECRET', '')
         self.access_token = os.getenv('ETRADE_ACCESS_TOKEN', '')
         self.access_token_secret = os.getenv('ETRADE_ACCESS_TOKEN_SECRET', '')
         self.base_url = "https://etwssandbox.etrade.com" if use_sandbox else "https://api.etrade.com"

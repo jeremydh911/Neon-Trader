@@ -1,30 +1,45 @@
-# Neon Trader 2.0 - Multi-Agent Trading Platform
+# AhanaTrade
 
-A sophisticated multi-agent trading system with democratic council voting, per-agent learning, persistent leaderboard scoring, and end-to-end observability via OpenTelemetry tracing.
+Retail day-trading desk for E*TRADE: limit-only, 7:00am–8:00pm ET, $10k deployed-out cap, plug-and-play agent brain.
+
+The GitHub repository is still named Neon-Trader.
+
+This is not investment advice and nothing here is a guaranteed return.
+
+## Product
+
+AhanaTrade is the Streamlit desk. A dark premium splash is the landing page; **Enter the desk** opens the existing E*TRADE workspace.
+
+- **Session**: 7:00am–8:00pm ET (Hawaii UI is ET-6 in August)
+- **Orders**: LIMIT + GOOD_FOR_DAY only (EXTENDED premarket / after-hours)
+- **Risk**: $10,000 aggregate deployed-out; max 3 open orders; overnight flat after 8:00pm ET
+- **Brain**: Plug in a Grok Bot or any OpenAI-compatible / webhook agent via `AHANA_BRAIN_URL`. If unset, the Tina / Eddie / Gloria / Victor / Riley council stays in charge.
+- **Broker**: E*TRADE sandbox first. Live requires `ETRADE_ENV=production` **and** per-order `confirm_live=True`.
+
+Sister products (AhanaFlow, AhanaZip, Chatwire / Cloud Wire, aarmOS) are private. This public tree only ships env-gated import-or-stub adapters — it does not vendor their source.
 
 ## Features
 
-- **Multi-Agent Orchestration**: 5 named specialist traders (Tina, Eddie, Gloria, Victor, Riley) with unique personalities and domain expertise
-- **Democratic Council**: Voting mechanism where agents debate and decide trades by majority with confidence weighting
-- **Persistent Learning**: Per-agent RAG memory + online learners (sklearn) enable continuous improvement
-- **Leaderboard Scoring**: +1 per $ won, -1.3 per $ lost; persistent SQLite database
-- **Trade Reconciliation**: Pending trades tracked and resolved when broker confirms closures
-- **Full Observability**: OpenTelemetry tracing of research → deliberation → execution → learning
-- **Docker Ready**: CPU/GPU containers with MCP microservices for ticker and charting
+- **Splash / landing**: AhanaTrade hero, session rules, CTA into the desk. No live balances or quotes on the splash.
+- **Multi-agent council** (default brain): Tina, Eddie, Gloria, Victor, Riley
+- **Plug-in brain**: `AHANA_BRAIN_URL` + optional `AHANA_BRAIN_TOKEN`
+- **Private-stack adapters** (no-op if the package is missing): AhanaFlow session/memory bus, Chatwire transport, AhanaZip pack
+- **Persistent learning**: per-agent RAG + online learners
+- **Leaderboard**: +1 per $ won, -1.3 per $ lost
+- **Observability**: OpenTelemetry tracing
+- **Docker**: CPU/GPU containers with MCP ticker/chart services
 
 ## Architecture Overview
 
 ```text
-Streamlit UI (Trading Page)
+Splash (AhanaTrade) → Enter the desk
+    ↓
+Streamlit UI (E*TRADE Dashboard / Trading)
     ↓
 CouncilOrchestrator
-├─ Agent Research Phase (all agents propose)
-├─ Council Deliberation (5 members vote)
-└─ Backend Execution (approved trades)
-    ├─ AutonomousTrader places order
-    └─ Agents learn from outcome
-        ├─ RAG memory updated
-        └─ Online learner trained
+├─ Plug-in brain (AHANA_BRAIN_URL)  OR  Tina/Eddie/Gloria/Victor/Riley
+└─ Backend execution (approved LIMIT orders)
+    └─ ETradeBroker  (sandbox default; live gated)
 ```
 
 ## Quick Start
@@ -32,13 +47,12 @@ CouncilOrchestrator
 ### Local Setup (No Docker)
 
 ```bash
-cd /home/jeremiah/Desktop/neon-trader-gpu
 pip install -r docker/requirements.cpu.txt
 export OTLP_ENABLED=false
 streamlit run app/app.py
 ```
 
-Then open `http://localhost:8501`.
+Then open `http://localhost:8501`. The splash is Home; **Enter the desk** goes to Trading.
 
 ### With Docker
 
@@ -51,15 +65,8 @@ Access at `http://localhost:8501`.
 
 ### With Tracing (Jaeger)
 
-Start Jaeger:
-
 ```bash
 docker run -d --name jaeger -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:latest
-```
-
-Run app with tracing:
-
-```bash
 export OTLP_ENABLED=true
 export OTLP_ENDPOINT=http://localhost:4317
 streamlit run app/app.py
@@ -67,54 +74,35 @@ streamlit run app/app.py
 
 View traces at `http://localhost:16686`.
 
-## Key Components
+## Plug-in agent brain
 
-| File | Purpose |
-|------|---------|
-| `agent_framework.py` | Core orchestration, base agent classes, RewardManager |
-| `specialist_agents.py` | 8 specialist agents + 5 named team members |
-| `trading_council.py` | Council voting logic (Tech, Sentiment, Risk, Memory, LLM) |
-| `autonomous_trader.py` | Backend trader with broker interface and council approval |
-| `rag_memory.py` | Per-agent RAG memory with embeddings and semantic search |
-| `leaderboard.py` | SQLite-backed scoring and pending trade tracking |
-| `reconciliation.py` | Worker to resolve pending trades and apply PnL |
-| `tracing_config.py` | OpenTelemetry initialization and span creation |
-| `app/app.py` | Streamlit UI with orchestrator integration |
+Set these in the environment (never commit tokens):
 
-## Usage
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `AHANA_BRAIN_URL` | _(unset)_ | Webhook JSON endpoint **or** OpenAI-compatible `/v1/chat/completions` URL |
+| `AHANA_BRAIN_TOKEN` | _(unset)_ | Optional bearer token |
+| `AHANA_BRAIN_MODEL` | `grok` | Model id when the URL is OpenAI-compatible |
 
-### Run a Trading Cycle
+If `AHANA_BRAIN_URL` is unset, the desk uses the existing council. If the plugin call fails, it falls back to the council.
 
-1. Open `http://localhost:8501`
-2. Go to Trading page
-3. Click "Run Single Research Cycle"
-4. View:
-   - Agent proposals
-   - Council decision
-   - Execution result
-   - Updated leaderboard
+See `app/services/brain_plugin.py`.
 
-### View Leaderboard
+## Private-stack adapters
 
-Persistent scores updated on every trade.
+Optional, env-gated, import-or-stub. Missing packages log and no-op.
 
-```bash
-sqlite3 ./data/leaderboard.db "SELECT agent, score FROM agents ORDER BY score DESC;"
-```
+| Adapter | Env | Role |
+|---------|-----|------|
+| AhanaFlow | `AHANAFLOW_URL` | Session / memory bus |
+| Chatwire / Cloud Wire | `CHATWIRE_URL` or `CLOUDWIRE_URL` | Compressed agent message transport |
+| AhanaZip | `AHANAZIP_DIR` | Artifact compress / pack |
 
-### Monitor Traces
-
-- Jaeger UI: `http://localhost:16686`
-- Filter by trace name: `orchestrator_cycle_AAPL`
-- Inspect agent research, council voting, and execution spans
+Do not clone or copy `jeremydh911/AhanaFlow`, `jeremydh911/AhanaZip`, `jeremydh911/Chatwire`, or aarmOS into this public tree.
 
 ## E*TRADE day-trading desk
 
-Neon Trader stays the Streamlit UI + council (Tina, Eddie, Gloria, Victor, Riley).
-Execution goes through the existing E*TRADE path (`etrade_service`, OAuth 1.0a HMAC-SHA1,
-`broker.ETradeBroker`). Alpaca may remain in the tree unused. There is no second bot.
-
-This is not investment advice and nothing here is a guaranteed return.
+AhanaTrade stays the Streamlit UI. Execution goes through the existing E*TRADE path (`etrade_service`, OAuth 1.0a HMAC-SHA1, `broker.ETradeBroker`). Alpaca may remain in the tree unused. There is no second bot.
 
 ### Sandbox vs live
 
@@ -166,60 +154,35 @@ day trade, the error is surfaced.
 | `ETRADE_CONSUMER_SECRET` | _(env / gitignored file)_ | OAuth consumer secret |
 | `ETRADE_ACCESS_TOKEN` | _(after OAuth)_ | Expires midnight ET / idle ~2h |
 | `ETRADE_ACCESS_TOKEN_SECRET` | _(after OAuth)_ | Pair with access token |
+| `AHANA_BRAIN_URL` | _(unset)_ | Plug-in brain; council used if empty |
+| `AHANA_BRAIN_TOKEN` | _(unset)_ | Optional bearer auth for the brain |
+| `AHANAFLOW_URL` | _(unset)_ | Enable AhanaFlow adapter if the package is installed |
+| `CHATWIRE_URL` | _(unset)_ | Enable Chatwire adapter if the package is installed |
+| `AHANAZIP_DIR` | _(unset)_ | Enable AhanaZip adapter if the package is installed |
 | `OTLP_ENABLED` | `true` | Disable if no collector available |
 | `OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry collector address |
 | `ALLOW_EARLY_START` | `true` | Start UI before LLM ready |
-| `OLLAMA_BASE_URL` | `http://ollama-gpu:11434` | LLM endpoint |
+| `OLLAMA_BASE_URL` | `http://ollama-gpu:11434` | LLM endpoint for the local council |
 
-## Project Structure
+## Key Components
 
-```text
-neon-trader-gpu/
-├── app/
-│   ├── app.py                       # Streamlit UI
-│   ├── api.py                       # FastAPI backend
-│   ├── services/
-│   │   ├── agent_framework.py       # Orchestration core
-│   │   ├── specialist_agents.py     # Agent implementations
-│   │   ├── trading_council.py       # Council voting
-│   │   ├── autonomous_trader.py     # Backend trader
-│   │   ├── leaderboard.py           # SQLite DB
-│   │   ├── reconciliation.py        # Trade reconciliation
-│   │   ├── tracing_config.py        # OpenTelemetry setup
-│   │   └── [other services...]
-│   ├── mcp/
-│   │   ├── ticker_service.py        # Ticker endpoint
-│   │   └── chart_service.py         # Chart endpoint
-│   └── pages/                       # Streamlit pages
-├── docker/
-│   ├── docker-compose.yml           # Main compose file
-│   ├── docker-compose-tracing.yml   # Jaeger stack
-│   ├── cpu/Dockerfile               # CPU worker
-│   ├── gpu/Dockerfile               # GPU worker
-│   └── requirements.cpu.txt         # CPU deps
-├── data/                            # Persistent storage
-│   ├── leaderboard.db               # Agent scores
-│   └── memory/                      # Per-agent memories
-├── TRACING.md                       # Tracing guide
-└── README.md                        # This file
-```
+| File | Purpose |
+|------|---------|
+| `app/components/splash.py` | Retail splash / landing page |
+| `app/services/brain_plugin.py` | Plug-in brain (Grok / OpenAI-compatible / webhook) |
+| `app/services/adapters/` | AhanaFlow, Chatwire, AhanaZip stubs |
+| `agent_framework.py` | Orchestration; honors plugin brain when configured |
+| `specialist_agents.py` | Named team: Tina, Eddie, Gloria, Victor, Riley |
+| `trading_council.py` | Council voting (used when no plugin brain) |
+| `autonomous_trader.py` | Backend trader with broker interface |
+| `broker.py` | E*TRADE execution path |
+| `desk_risk.py` | Session, LIMIT-only, $10k-out |
+| `app/app.py` | Streamlit UI (splash + desk) |
 
 ## Testing
 
-Verify installation:
-
 ```bash
-python -c "from app.services.agent_framework import CouncilOrchestrator; print('✓')"
-python -c "from app.services.leaderboard import get_leaderboard_db; print('✓')"
-python -c "from app.services.tracing_config import setup_tracing; print('✓')"
-```
-
-Run test suites:
-
-```bash
-python app/services/test_leaderboard.py
-python app/services/test_reconciliation.py
-python app/services/tracing_example.py
+pytest
 ```
 
 ## Troubleshooting
@@ -238,29 +201,6 @@ python app/services/tracing_example.py
 
 - Remove stale DB: `rm ./data/leaderboard.db`
 
-### Agent not learning
-
-- Verify trade result from execution
-- Check memory directory: `ls -la ./data/memory/agents/`
-
-## Next Steps
-
-- **Broker Integration**: E*TRADE sandbox desk is wired; live still needs OAuth + confirm_live
-- **LLM Setup**: Install Ollama/Mistral in GPU container
-- **Production**: Kubernetes manifests, persistent volumes, monitoring
-- **Advanced Learning**: Weekly champions, streaks, federated learning
-
-## References
-
-- [OpenTelemetry](https://opentelemetry.io/)
-- [Streamlit Docs](https://streamlit.io/)
-- [Jaeger Tracing](https://www.jaegertracing.io/)
-- [Docker Compose](https://docs.docker.com/compose/)
-
 ## License
 
-This is a demonstration project. Use responsibly and never enable autonomous trading with real capital without extensive testing.
-
----
-
-**Status**: Beta (Dec 2025). All core features implemented. Ready for testing and integration with live brokers.
+Demonstration project. Use responsibly. Never enable live trading without sandbox testing, OAuth, and `confirm_live`.

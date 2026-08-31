@@ -80,18 +80,18 @@ def pull_model():
 
 def start_streamlit():
     """Start Streamlit application"""
-    logger.info("Starting Neon Trader Streamlit application...")
+    logger.info("Starting AhanaTrade Streamlit application...")
     os.system("streamlit run app/main.py --server.port=8501 --server.address=0.0.0.0")
 
 def start_api():
     """Start FastAPI backend"""
-    logger.info("Starting Neon Trader API...")
+    logger.info("Starting AhanaTrade API...")
     os.system("uvicorn app.api:app --host 0.0.0.0 --port 8000")
 
 def main():
     """Main entry point"""
     logger.info("=" * 60)
-    logger.info("🚀 Neon Trader - GPU-Accelerated Trading Platform")
+    logger.info("AhanaTrade - E*TRADE day-trading desk")
     logger.info("=" * 60)
     
     # Check if we should wait for LLM

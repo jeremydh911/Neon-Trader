@@ -157,7 +157,7 @@ class AlpacaBroker(BrokerConnection):
 
 
 class ETradeBroker(BrokerConnection):
-    """E*TRADE execution path used by the Neon Trader day-trading desk.
+    """E*TRADE execution path used by the AhanaTrade day-trading desk.
 
     Preview is separate from place. Live (ETRADE_ENV=production) requires an
     explicit per-order confirm and will not one-shot preview+place.

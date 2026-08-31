@@ -543,7 +543,7 @@ st.divider()
 # Footer
 st.markdown("""
 ---
-**E*TRADE Dashboard** | Neon Trader v1.0
+**E*TRADE Dashboard** | AhanaTrade
 - Environment: Sandbox (Paper Trading)
 - Last Updated: """ + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + """
 - 📖 [E*TRADE API Docs](https://apisb.etrade.com/docs/api/account/api-account-v1.html)

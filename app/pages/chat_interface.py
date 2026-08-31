@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Configure page
 st.set_page_config(
-    page_title="Chat Interface - Neon Trader",
+    page_title="Chat Interface - AhanaTrade",
     page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -444,7 +444,7 @@ def chat_all_in_one_tab():
 
 # Main app
 def main():
-    st.sidebar.title("🎯 Neon Trader Chat")
+    st.sidebar.title("AhanaTrade Chat")
     
     # Mode selection
     chat_mode = st.sidebar.radio(

@@ -300,7 +300,7 @@ class ETradeOAuthCallbackFlow:
             'instructions': {
                 'step1': 'Click the authorization URL to open in browser',
                 'step2': 'Login with E*TRADE credentials',
-                'step3': 'Grant permission to Neon Trader',
+                'step3': 'Grant permission to AhanaTrade',
                 'step4': 'You will be redirected - verification code auto-captured',
                 'step5': 'Return to app when callback completes'
             }

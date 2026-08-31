@@ -65,7 +65,7 @@ st.markdown("""
 
 # Title
 st.title("🔐 E*TRADE OAuth Authentication Manager")
-st.markdown("Complete E*TRADE OAuth authentication for Neon Trader")
+st.markdown("Complete E*TRADE OAuth authentication for AhanaTrade")
 
 # Initialize session state
 if 'oauth_service' not in st.session_state:
@@ -111,7 +111,7 @@ with st.sidebar:
         1. Click "Initiate OAuth Flow"
         2. Visit the authorization URL
         3. Login to E*TRADE
-        4. Approve "Neon Trader"
+        4. Approve "AhanaTrade"
         5. Copy verification code
         6. Paste code below
         7. Click "Complete Authentication"
@@ -188,7 +188,7 @@ if st.button("Initiate OAuth Flow", use_container_width=True, type="primary", ke
             
             # Display authorization URL
             st.markdown("### 📋 Authorization URL")
-            st.markdown("**Please visit this URL to authorize Neon Trader:**")
+            st.markdown("**Please visit this URL to authorize AhanaTrade:**")
             st.code(result['auth_url'], language="text")
 
             st.markdown("### ⚡ Quick: Open & Auto-Complete")
@@ -216,7 +216,7 @@ if st.button("Initiate OAuth Flow", use_container_width=True, type="primary", ke
             st.markdown("""
             1. **Visit the URL above** (or copy and paste into your browser)
             2. **Login to E*TRADE** with your sandbox account
-            3. **Review permissions** and approve the "Neon Trader" application
+            3. **Review permissions** and approve the "AhanaTrade" application
             4. **Copy the verification code** from E*TRADE (usually 6-8 characters)
             5. **Paste the code below** and click "Complete Authentication"
             """)
@@ -269,14 +269,14 @@ with col2:
                     
                     with st.expander("📋 Next Steps", expanded=True):
                         st.markdown("""
-                        1. ✅ Restart the Neon Trader app
+                        1. ✅ Restart the AhanaTrade app
                         2. ✅ E*TRADE integration will now be active
                         3. ✅ Real-time quotes from E*TRADE will be used
                         4. ✅ You can now place live orders in sandbox
                         
                         **Start trading:**
                         ```bash
-                        ~/Desktop/Neon Trader Start
+                        ~/Desktop/AhanaTrade Start
                         ```
                         
                         **Access the app:**
@@ -321,7 +321,7 @@ st.divider()
 # Footer
 st.markdown("""
 ---
-**E*TRADE OAuth Manager** | Neon Trader v1.0
+**E*TRADE OAuth Manager** | AhanaTrade
 - 📖 [E*TRADE Developer](https://developer.etrade.com/)
 - 🔗 [API Docs](https://apisb.etrade.com/docs/api/account/api-account-v1.html)
 - 🐛 [Report Issues](https://github.com/your-repo/issues)

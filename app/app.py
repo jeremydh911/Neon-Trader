@@ -1,5 +1,5 @@
 """
-Neon Trader Application
+AhanaTrade Application
 Streamlit UI for trading platform
 """
 
@@ -66,8 +66,8 @@ if 'current_settings_cache' not in st.session_state:
 
 # Page configuration
 st.set_page_config(
-    page_title="Neon Trader",
-    page_icon="📈",
+    page_title="AhanaTrade",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -99,13 +99,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Sidebar
-st.sidebar.title("⚙️ Neon Trader")
+st.sidebar.title("AhanaTrade")
+st.sidebar.caption("GitHub repo remains Neon-Trader")
 st.sidebar.markdown("---")
 
+NAV_PAGES = ["Home", "Dashboard", "Stock Ticker", "Training", "Trading", "Portfolio", "Analytics", "Settings"]
+if st.session_state.get("ahanatrade_enter_desk"):
+    st.session_state["nav_page"] = st.session_state.get("ahanatrade_desk_target") or "Trading"
+    st.session_state["ahanatrade_enter_desk"] = False
+if "nav_page" not in st.session_state:
+    st.session_state["nav_page"] = "Home"
 page = st.sidebar.radio(
     "Navigation",
-    ["Dashboard", "Stock Ticker", "Training", "Trading", "Portfolio", "Analytics", "Settings"],
-    index=0
+    NAV_PAGES,
+    key="nav_page",
 )
 
 # Check LLM status
@@ -138,7 +145,12 @@ def check_llm_status():
     return False, 0
 
 # Main content
-st.title("📊 Neon Trader - GPU Trading Platform")
+if page == "Home":
+    from components.splash import render_splash
+    render_splash(cta_page="Trading", cta_label="Enter the desk")
+    st.stop()
+
+st.title("AhanaTrade")
 
 col1, col2, col3 = st.columns(3)
 

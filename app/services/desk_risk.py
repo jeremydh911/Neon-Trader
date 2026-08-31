@@ -1,4 +1,4 @@
-"""Day-trading desk risk gate for Neon Trader's E*TRADE path.
+"""Day-trading desk risk gate for AhanaTrade's E*TRADE path.
 
 $10,000 aggregate capital-out cap. Session 07:00–20:00 America/New_York
 (pre-market through after-hours). LIMIT-only. Overnight out.
@@ -132,7 +132,7 @@ class DeskRiskGate:
             "min_equity_usd": None,
             "refuse_day_trades": False,
             "note": (
-                "FINRA PDT / $25k is not enforced by Neon Trader. "
+                "FINRA PDT / $25k is not enforced by AhanaTrade. "
                 "Day trades are allowed; brokerage rejections are surfaced."
             ),
         }

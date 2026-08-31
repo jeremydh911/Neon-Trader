@@ -125,8 +125,6 @@ class AgentBase:
             "timestamp": datetime.utcnow().isoformat()
         }
 
-    def research(self, symbol: str, context: Dict[str, Any]) -> Dict[str, Any]:
-
     def on_trade_result(self, trade_record: Dict[str, Any]) -> None:
         """Default hook: store trade result in agent memory and update learner if pnl available."""
         try:
@@ -276,10 +274,29 @@ class CouncilOrchestrator:
             span.set_attribute("price", current_price)
             span.set_attribute("num_agents", len(self.agents))
 
+            # Plug-in brain (AHANA_BRAIN_URL) replaces local agents when configured.
+            plugin_top = None
+            try:
+                from .brain_plugin import plugin_proposal
+                plugin_top = plugin_proposal(
+                    symbol=symbol,
+                    current_price=current_price,
+                    indicators=indicators,
+                    available_capital=available_capital,
+                    market_sentiment=market_sentiment,
+                )
+            except Exception:
+                logger.debug("brain plugin not used")
+                plugin_top = None
+
             # Gather proposals
             with tracer.start_as_current_span("gather_proposals") as prop_span:
-                proposals = [agent.research(symbol, {"indicators": indicators, "market_sentiment": market_sentiment}) for agent in self.agents]
+                if plugin_top:
+                    proposals = [plugin_top]
+                else:
+                    proposals = [agent.research(symbol, {"indicators": indicators, "market_sentiment": market_sentiment}) for agent in self.agents]
                 prop_span.set_attribute("num_proposals", len(proposals))
+                prop_span.set_attribute("brain", "plugin" if plugin_top else "council")
 
             # Pick top proposal by confidence
             proposals_sorted = sorted(proposals, key=lambda p: p.get("confidence", 0), reverse=True)
@@ -291,27 +308,31 @@ class CouncilOrchestrator:
 
             action = top.get("action", "HOLD")
 
-            # Submit to trading council for discussion
-            with tracer.start_as_current_span("council_deliberation") as council_span:
-                council_span.set_attribute("action", action)
-                council_span.set_attribute("symbol", symbol)
-                decision, approved = self.council.discuss_trade(
-                    symbol=symbol,
-                    action=action,
-                    current_price=current_price,
-                    indicators=indicators,
-                    available_capital=available_capital,
-                    market_sentiment=market_sentiment
-                )
-                council_span.set_attribute("approved", approved)
-                if decision:
-                    council_span.set_attribute("approval_pct", decision.approval_percentage)
+            # Submit to trading council unless the plug-in brain is the desk.
+            if plugin_top:
+                decision, approved = None, bool(plugin_top.get("approved"))
+            else:
+                with tracer.start_as_current_span("council_deliberation") as council_span:
+                    council_span.set_attribute("action", action)
+                    council_span.set_attribute("symbol", symbol)
+                    decision, approved = self.council.discuss_trade(
+                        symbol=symbol,
+                        action=action,
+                        current_price=current_price,
+                        indicators=indicators,
+                        available_capital=available_capital,
+                        market_sentiment=market_sentiment
+                    )
+                    council_span.set_attribute("approved", approved)
+                    if decision:
+                        council_span.set_attribute("approval_pct", decision.approval_percentage)
 
             result = {
                 "symbol": symbol,
                 "proposal": top,
                 "council_decision": decision.to_dict() if isinstance(decision, CouncilDecision) else None,
-                "approved": approved
+                "approved": approved,
+                "brain": "plugin" if plugin_top else "council",
             }
 
             # If approved and backend available, execute via backend trader

@@ -1,5 +1,5 @@
 """
-Neon Trader - Main Streamlit Application
+AhanaTrade - Main Streamlit Application
 Trading council with E*TRADE integration, RAG learning, and autonomous trading
 """
 
@@ -27,8 +27,8 @@ from services.funding_service import FundingService
 
 # Page configuration
 st.set_page_config(
-    page_title="Neon Trader",
-    page_icon="🚀",
+    page_title="AhanaTrade",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -89,7 +89,9 @@ if 'funding_service' not in st.session_state:
 
 # Sidebar - OAuth Status & Controls
 with st.sidebar:
-    st.markdown("## 🔐 E*TRADE OAuth")
+    st.markdown("## AhanaTrade")
+    st.caption("GitHub repo remains Neon-Trader")
+    st.markdown("### 🔐 E*TRADE OAuth")
     
     # Get OAuth status
     oauth_status = oauth_service.get_status()
@@ -201,10 +203,13 @@ with st.sidebar:
     st.divider()
     
     # Navigation
+    if st.session_state.get("ahanatrade_enter_desk"):
+        st.session_state["page_selector"] = "E*TRADE Dashboard"
+        st.session_state["ahanatrade_enter_desk"] = False
     st.markdown("### 📊 Pages")
     page = st.radio(
         "Select page:",
-        options=["Dashboard", "E*TRADE Dashboard", "Trading Council", "Settings"],
+        options=["Home", "Dashboard", "E*TRADE Dashboard", "Trading Council", "Settings"],
         key="page_selector"
     )
 
@@ -241,10 +246,18 @@ with st.sidebar:
         st.error(f"Funding status unavailable: {e}")
 
 # Main content
+if page == "Home":
+    try:
+        from components.splash import render_splash
+    except ImportError:
+        from app.components.splash import render_splash
+    render_splash(cta_page="E*TRADE Dashboard", cta_label="Enter the desk")
+    st.stop()
+
 st.markdown("""
 <div class="main-header">
-    <h1>🚀 Neon Trader</h1>
-    <p>Multi-Council Trading with E*TRADE Integration</p>
+    <h1>AhanaTrade</h1>
+    <p>Limit-only E*TRADE desk · 7:00am–8:00pm ET · $10k out</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -361,11 +374,11 @@ st.divider()
 
 st.markdown("""
 ---
-**Neon Trader v1.0** | Multi-GPU Trading Council  
+**AhanaTrade** | Limit-only E*TRADE desk  
 Environment: **Sandbox** | E*TRADE Connected: **""" + 
 ("✅ Yes" if oauth_status['is_authenticated'] else "❌ No") + """**
 
 🔗 Resources:
 - [E*TRADE API Docs](https://apisb.etrade.com/docs/api/account/api-account-v1.html)
-- [Neon Trader Docs](https://github.com/your-repo)
+- [AhanaTrade repo (Neon-Trader)](https://github.com/jeremydh911/Neon-Trader)
 """)

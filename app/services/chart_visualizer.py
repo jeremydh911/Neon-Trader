@@ -323,7 +323,7 @@ class ChartVisualizer:
 
 
     def create_desk_chart(self, symbol, bars, overlays=None, title=None):
-        """Candlestick desk chart with VWAP, OR, PM range, and invalidation."""
+        """Candlestick desk chart with VWAP, OR, PM 7:00–9:20, holdings peak/valley, and invalidation."""
         if not self.plotly_available:
             return {"error": "Plotly not available"}
         overlays = overlays or {}
@@ -358,8 +358,10 @@ class ChartVisualizer:
             ("vwap", overlays.get("vwap"), "#c9a227", "dash", "VWAP"),
             ("or_high", overlays.get("or_high"), "#7bdff2", "dot", "OR high"),
             ("or_low", overlays.get("or_low"), "#7bdff2", "dot", "OR low"),
-            ("pm_high", overlays.get("pm_high"), "#9b8ec4", "dashdot", "PM 7-9 high"),
-            ("pm_low", overlays.get("pm_low"), "#9b8ec4", "dashdot", "PM 7-9 low"),
+            ("pm_high", overlays.get("pm_high"), "#9b8ec4", "dashdot", "PM 7:00–9:20 high"),
+            ("pm_low", overlays.get("pm_low"), "#9b8ec4", "dashdot", "PM 7:00–9:20 low"),
+            ("peak", overlays.get("peak"), "#f2cc8f", "dot", "Holdings peak"),
+            ("valley", overlays.get("valley"), "#81b29a", "dot", "Holdings valley"),
             ("invalidation", overlays.get("invalidation"), "#e07a5f", "dash", "Invalidation"),
         ]
         for _key, val, color, dash, label in levels:

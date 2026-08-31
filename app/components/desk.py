@@ -21,11 +21,16 @@ def _demo_bars(symbol: str) -> List[Dict[str, Any]]:
     """Labeled synthetic session bars when public quotes are unavailable."""
     day = datetime(2026, 9, 1, 7, 0, tzinfo=ET)
     bars = []
+    # Prior RTH close so setup A can compute a premarket gap.
+    bars.append({
+        "ts": datetime(2026, 8, 31, 15, 55, tzinfo=ET),
+        "open": 99.0, "high": 99.2, "low": 98.8, "close": 99.0, "volume": 8000, "demo": True,
+    })
     price = 100.0
     for i in range(0, 180):
         ts = day + timedelta(minutes=i)
         o = price
-        # PM 7-9 range ~ 99.5-101
+        # PM 7:00–9:20 range ~ 99.5-101
         if ts.hour < 9:
             h, l, c = o + 0.4, o - 0.3, o + 0.05
         elif ts.hour == 9 and ts.minute < 30:
@@ -43,7 +48,7 @@ def _load_bars(symbol: str) -> List[Dict[str, Any]]:
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d", interval="1m", prepost=True)
+        hist = ticker.history(period="5d", interval="1m", prepost=True)
         if hist is None or hist.empty:
             return _demo_bars(symbol)
         rows = []
@@ -85,7 +90,7 @@ def render_desk(oauth_service=None) -> None:
         open_name_count,
         is_ira_account,
     )
-    from services.strategy_catcher import catch_symbol
+    from services.strategy_catcher import PLAYBOOK_CAPTION, catch_symbol
     from services.chart_visualizer import ChartVisualizer
     from services.brain_plugin import active_brain, brain_configured
     from services.etrade_config import is_sandbox
@@ -139,6 +144,7 @@ def render_desk(oauth_service=None) -> None:
         f"PDT off · crypto off REST · HT = ET-6 in August. "
         + ("IRA — shorts blocked." if is_ira_account(account_type) else "Shorts allowed unless IRA.")
     )
+    st.caption(PLAYBOOK_CAPTION)
 
     with st.sidebar:
         st.markdown("#### Watch")
@@ -191,10 +197,16 @@ def render_desk(oauth_service=None) -> None:
     if selected.get("overlays"):
         overlays = selected["overlays"]
     else:
-        from services.strategy_catcher import opening_15m_range, premarket_7_9_range, session_vwap, last_close
+        from services.strategy_catcher import (
+            opening_15m_range,
+            premarket_7_920_range,
+            session_vwap,
+            last_close,
+            holdings_peak_valley_levels,
+        )
         rows = bars
         orng = opening_15m_range(rows) or {}
-        pm = premarket_7_9_range(rows) or {}
+        pm = premarket_7_920_range(rows) or {}
         overlays = {
             "vwap": session_vwap(rows),
             "or_high": orng.get("high"),
@@ -204,6 +216,8 @@ def render_desk(oauth_service=None) -> None:
             "invalidation": (selected or {}).get("invalidation"),
             "last": last_close(rows),
         }
+        if holdings:
+            overlays.update({k: v for k, v in holdings_peak_valley_levels(rows).items() if v is not None})
 
     chart_col, feed_col = st.columns([3, 2])
     with chart_col:
@@ -221,9 +235,18 @@ def render_desk(oauth_service=None) -> None:
         st.markdown("#### Plan alerts")
         alerts = st.session_state.get("desk_alerts") or []
         if not alerts:
-            st.caption("Scan a symbol to catch A/B/C/D setups. Each catch is a plan under the remaining $10k sleeve.")
+            st.caption(
+                "Scan A Premarket gap 7:00–9:20 · B Open drive 9:30–10:15 · "
+                "C VWAP reclaim 10:00–15:45 · D AH follow 16:00–20:00. "
+                "Peak/valley is a holdings overlay. Each catch is a plan under the remaining $10k sleeve."
+            )
         for i, plan in enumerate(alerts):
-            exp = " · experimental" if plan.get("experimental") else ""
+            extra = []
+            if plan.get("experimental"):
+                extra.append("experimental")
+            if plan.get("setup") == "HOLDINGS":
+                extra.append("holdings overlay")
+            exp = (" · " + " · ".join(extra)) if extra else ""
             with st.expander(f"{plan.get('symbol')} · {plan.get('setup')} · {plan.get('side')}{exp}", expanded=i == 0):
                 st.write(plan.get("why"))
                 st.write(

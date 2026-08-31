@@ -23,8 +23,8 @@ Sister products (AhanaZip, Chatwire / Cloud Wire, aarmOS) are private. Public Ah
 ## Features
 
 - **Splash / landing**: AhanaTrade hero, session rules, CTA into the desk. No live balances or quotes on the splash.
-- **Desk chart**: Candles plus VWAP, opening 15m range, PM 7–9 range, and the invalidation the catcher is using.
-- **Strategy catch**: A ORB, B VWAP reclaim/reject, C premarket range, D peak/valley on holdings (trim peaks, buy dips, leave a runner).
+- **Desk chart**: Candles plus VWAP, opening 15m range, PM 7:00–9:20 range, holdings peak/valley overlay, and the invalidation the catcher is using.
+- **Strategy catch**: A Premarket gap 7:00–9:20 ET, B Open drive 9:30–10:15 (first 15m / opening range), C VWAP reclaim 10:00–15:45, D AH follow 16:00–20:00. Peak/valley (trim peaks, buy dips, leave a runner) is a holdings overlay, not letter D. Kona Latch experimental, default OFF.
 - **Plan alerts**: Symbol, setup, side, limit zone, size $ and shares under remaining budget, invalidation, flatten time, why it fired, IRA-short note, similar past setups.
 - **Budget**: Single book in `desk_risk.py` / `config.RISK` — not a second ledger.
 - **E*TRADE ticket**: OAuth, preview, then place. Live will not one-shot.
@@ -39,7 +39,7 @@ Splash (AhanaTrade) → Enter the desk
     ↓
 Desk workspace
 ├─ Chart overlays (VWAP / OR / PM / invalidation)
-├─ Strategy catcher A/B/C/D → plan cards
+├─ Strategy catcher A gap / B open drive / C VWAP / D AH follow → plan cards
 ├─ AhanaMemory RAG (similar past setups)
 └─ E*TRADE preview → place
     └─ DeskRiskGate  (LIMIT, $10k-out, per-name, IRA shorts)
@@ -172,7 +172,7 @@ Shorts are allowed on cash/margin accounts. IRA accounts may not short.
 |------|---------|
 | `app/components/splash.py` | Retail splash / landing page |
 | `app/components/desk.py` | Primary desk: chart, plans, budget, ticket |
-| `app/services/strategy_catcher.py` | A/B/C/D detectors → plan cards |
+| `app/services/strategy_catcher.py` | A Premarket gap / B Open drive / C VWAP reclaim / D AH follow → plan cards (peak/valley is a holdings overlay) |
 | `app/services/desk_risk.py` | Session, LIMIT-only, $10k-out, per-name, IRA shorts |
 | `app/services/ahana_memory.py` | Thin RAG over AhanaFlow / local gzip JSONL |
 | `app/services/adapters/ahanaflow.py` | Store put/get/query (SDK or local fallback) |

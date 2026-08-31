@@ -108,10 +108,64 @@ sqlite3 ./data/leaderboard.db "SELECT agent, score FROM agents ORDER BY score DE
 - Filter by trace name: `orchestrator_cycle_AAPL`
 - Inspect agent research, council voting, and execution spans
 
+## E*TRADE day-trading desk
+
+Neon Trader stays the Streamlit UI + council (Tina, Eddie, Gloria, Victor, Riley).
+Execution goes through the existing E*TRADE path (`etrade_service`, OAuth 1.0a HMAC-SHA1,
+`broker.ETradeBroker`). Alpaca may remain in the tree unused. There is no second bot.
+
+This is not investment advice and nothing here is a guaranteed return.
+
+### Sandbox vs live
+
+| | Sandbox (default) | Live |
+|---|---|---|
+| Env | `ETRADE_ENV=sandbox` (or unset) | `ETRADE_ENV=production` **and** per-order `confirm_live=True` |
+| Host | `https://apisb.etrade.com/v1` | `https://api.etrade.com/v1` |
+| Place | Preview first, then place with `preview_id` | Same; one-shot preview+place is disabled |
+
+OAuth tokens expire at midnight ET and go idle after ~2 hours. Re-auth via the OAuth page.
+
+### Credentials (never commit)
+
+Set `ETRADE_CONSUMER_KEY` and `ETRADE_CONSUMER_SECRET` in the environment or a
+gitignored file (`etrade.env`, `.env`, or `ETRADE_ENV_FILE`). Optional access
+tokens: `ETRADE_ACCESS_TOKEN`, `ETRADE_ACCESS_TOKEN_SECRET`. Copy `.env.example`.
+Do not put keys in the repo, README, or logs.
+
+### Session clock (America/New_York)
+
+Hawaii UI is **ET-6 in August** (HST vs EDT).
+
+| Window (ET) | Phase | Order flags |
+|---|---|---|
+| 04:00–07:00 | Blackout | No orders |
+| 07:00–09:30 | Premarket | `EXTENDED` + `LIMIT` + `GOOD_FOR_DAY` |
+| ~09:28 | Cancel-before-roll | Cancel remaining EXTENDED working orders so they do not auto-roll |
+| 09:30–16:00 | Regular | `REGULAR` + `LIMIT` + `GOOD_FOR_DAY` |
+| 16:00–20:00 | After-hours | `EXTENDED` + `LIMIT` + `GOOD_FOR_DAY`; unfilled working limits are repriced as the tape moves |
+| 20:00–07:00 | Overnight out | No overnight risk |
+
+All orders are LIMIT. Crypto is not sent on the REST Order API (account entitlement
+does not override that). PDT / $25k is **not** enforced in-app; if E*TRADE rejects a
+day trade, the error is surfaced.
+
+### Risk caps
+
+- Max **$10,000 deployed-out aggregate** across positions
+- Max 3 open orders
+- Daily-loss halt for **new entries only**: min($250, 2.5% equity)
+- Unique `clientOrderId` ≤ 20 alphanumeric
+
 ## Configuration
 
 | Variable | Default | Notes |
 |----------|---------|-------|
+| `ETRADE_ENV` | `sandbox` | `production` required for live |
+| `ETRADE_CONSUMER_KEY` | _(env / gitignored file)_ | OAuth consumer key |
+| `ETRADE_CONSUMER_SECRET` | _(env / gitignored file)_ | OAuth consumer secret |
+| `ETRADE_ACCESS_TOKEN` | _(after OAuth)_ | Expires midnight ET / idle ~2h |
+| `ETRADE_ACCESS_TOKEN_SECRET` | _(after OAuth)_ | Pair with access token |
 | `OTLP_ENABLED` | `true` | Disable if no collector available |
 | `OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry collector address |
 | `ALLOW_EARLY_START` | `true` | Start UI before LLM ready |
@@ -191,7 +245,7 @@ python app/services/tracing_example.py
 
 ## Next Steps
 
-- **Broker Integration**: Wire eTrade or live broker APIs
+- **Broker Integration**: E*TRADE sandbox desk is wired; live still needs OAuth + confirm_live
 - **LLM Setup**: Install Ollama/Mistral in GPU container
 - **Production**: Kubernetes manifests, persistent volumes, monitoring
 - **Advanced Learning**: Weekly champions, streaks, federated learning

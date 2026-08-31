@@ -1,5 +1,10 @@
 # --- Secrets / credentials (never commit) ---
 # E*TRADE
+etrade.env
+**/etrade.env
+.secrets/
+**/.secrets/
+*.etrade.env
 app/config/etrade-credentials.json
 config/etrade-credentials.json
 **/etrade-credentials.json

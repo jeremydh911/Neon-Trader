@@ -56,30 +56,33 @@ class ETradeOAuthService:
                 self.credentials_file = '/app/config/etrade-credentials.json'  # Default fallback
         
         self.tokens_file = '/app/config/.etrade_tokens'
+        try:
+            from .etrade_config import load_etrade_env, load_credentials, is_sandbox, etrade_hosts
+        except ImportError:
+            from app.services.etrade_config import load_etrade_env, load_credentials, is_sandbox, etrade_hosts
+        load_etrade_env()
         self.credentials = self._load_credentials()
 
-        # Allow environment variable overrides for credentials and base URL
-        env_consumer_key = os.getenv('ETRADE_CONSUMER_KEY')
-        env_consumer_secret = os.getenv('ETRADE_CONSUMER_SECRET')
-        env_sandbox = os.getenv('ETRADE_SANDBOX')
+        # Env / gitignored file wins. Default SANDBOX (apisb.etrade.com).
+        creds = load_credentials(load_files=False)
+        if 'etrade' not in self.credentials:
+            self.credentials['etrade'] = {}
+        if 'oauth' not in self.credentials['etrade']:
+            self.credentials['etrade']['oauth'] = {}
+        if 'api' not in self.credentials['etrade']:
+            self.credentials['etrade']['api'] = {}
+        if creds.consumer_key:
+            self.credentials['etrade']['oauth']['consumer_key'] = creds.consumer_key
+        if creds.consumer_secret:
+            self.credentials['etrade']['oauth']['consumer_secret'] = creds.consumer_secret
+        sandbox_mode = is_sandbox()
+        self.credentials['etrade']['oauth']['sandbox_mode'] = sandbox_mode
+        hosts = etrade_hosts(sandbox=sandbox_mode)
         env_base_url = os.getenv('ETRADE_BASE_URL')
-
-        if env_consumer_key and env_consumer_secret:
-            # ensure the structure is present
-            if 'etrade' not in self.credentials:
-                self.credentials['etrade'] = {}
-            if 'oauth' not in self.credentials['etrade']:
-                self.credentials['etrade']['oauth'] = {}
-            self.credentials['etrade']['oauth']['consumer_key'] = env_consumer_key
-            self.credentials['etrade']['oauth']['consumer_secret'] = env_consumer_secret
-            # configure sandbox flag if provided
-            if env_sandbox is not None:
-                self.credentials['etrade']['oauth']['sandbox_mode'] = env_sandbox.lower() in ('1', 'true', 'yes')
-            # configure base URL if provided
-            if env_base_url:
-                if 'api' not in self.credentials['etrade']:
-                    self.credentials['etrade']['api'] = {}
-                self.credentials['etrade']['api']['base_url'] = env_base_url
+        self.credentials['etrade']['api']['base_url'] = env_base_url or hosts['host']
+        self.credentials['etrade']['oauth'].setdefault('request_token_url', hosts['request_token_url'])
+        self.credentials['etrade']['oauth'].setdefault('access_token_url', hosts['access_token_url'])
+        self.credentials['etrade']['oauth'].setdefault('authorize_url', hosts['authorize_url'])
         self.oauth = None
         self.client = None
         self.is_authenticated = False
@@ -127,9 +130,10 @@ class ETradeOAuthService:
                 logger.error(f"  (Direct import also failed: {e})")
             raise Exception('pyetrade not installed. Install with: pip install pyetrade')
 
-        if not self.credentials or 'etrade' not in self.credentials:
+        oauth_block = (self.credentials or {}).get('etrade', {}).get('oauth', {})
+        if not oauth_block.get('consumer_key') or not oauth_block.get('consumer_secret'):
             logger.error('Credentials not loaded')
-            raise Exception('E*TRADE credentials file missing or invalid')
+            raise Exception('E*TRADE consumer key/secret missing (set ETRADE_CONSUMER_KEY / ETRADE_CONSUMER_SECRET)')
 
         max_retries = 3
         retry_delay = 2  # seconds
@@ -147,10 +151,14 @@ class ETradeOAuthService:
                 # Determine sandbox / production endpoints
                 oauth_cfg = self.credentials.get('etrade', {}).get('oauth', {})
                 api_cfg = self.credentials.get('etrade', {}).get('api', {})
-                sandbox_mode = oauth_cfg.get('sandbox_mode', False)
+                try:
+                    from .etrade_config import is_sandbox, etrade_hosts
+                except ImportError:
+                    from app.services.etrade_config import is_sandbox, etrade_hosts
+                sandbox_mode = oauth_cfg.get('sandbox_mode', is_sandbox())
                 env_sandbox = os.getenv('ETRADE_SANDBOX')
-                if env_sandbox is not None:
-                    sandbox_mode = env_sandbox.lower() in ('1', 'true', 'yes')
+                if os.getenv('ETRADE_ENV') or env_sandbox is not None:
+                    sandbox_mode = is_sandbox()
 
                 # Base URL override
                 base_url = api_cfg.get('base_url')

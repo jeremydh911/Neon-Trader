@@ -74,7 +74,17 @@ if not service_status['is_authenticated']:
     Until then, you're using paper trading mode.
     """)
 else:
-    st.success("✅ E*TRADE Connected (Sandbox)")
+    env_label = service_status.get("environment", "Sandbox")
+    st.success(f"E*TRADE Connected ({env_label})")
+    try:
+        from services.desk_risk import DeskRiskGate
+        clock = DeskRiskGate().hawaii_clock()
+        st.caption(
+            f"Session clock {clock['et']} ET / {clock['ht']} HT "
+            f"({clock['offset_note']}) — phase {clock['phase']}"
+        )
+    except Exception:
+        st.caption("Session 07:00–20:00 ET (HT = ET-6 in August). Blackout 04:00–07:00 ET.")
 
 # Sidebar
 with st.sidebar:
@@ -89,7 +99,7 @@ with st.sidebar:
     # Status indicator
     st.subheader("Connection Status")
     if service_status['is_authenticated']:
-        st.success(f"✅ Connected to Sandbox")
+        st.success(f"Connected ({service_status.get('environment', 'Sandbox')})")
     else:
         st.error("❌ Not Connected")
     
@@ -347,27 +357,34 @@ if service_status['is_authenticated']:
         with col1:
             order_type = st.selectbox(
                 "Order Type:",
-                options=["Market", "Limit", "Stop"]
+                options=["Limit"],
+                help="Desk is LIMIT-only. Premarket/after-hours use EXTENDED + GOOD_FOR_DAY.",
             )
         
         with col2:
-            if order_type in ["Limit", "Stop"]:
-                order_price = st.number_input(
-                    f"{order_type} Price:",
-                    value=100.00,
-                    step=0.01
-                )
-            else:
-                order_price = None
+            order_price = st.number_input(
+                "Limit Price:",
+                value=100.00,
+                step=0.01,
+            )
         
-        with col3:
-            preview = st.checkbox("Preview Order", value=True)
-        
-        # Place order buttons
+        is_sandbox = service_status.get("sandbox", True)
+        if "pending_preview" not in st.session_state:
+            st.session_state.pending_preview = None
+
+        confirm_live = True
+        if not is_sandbox:
+            st.warning("LIVE E*TRADE — preview then place; one-shot place is disabled.")
+            confirm_live = st.checkbox(
+                "I confirm this LIVE E*TRADE order",
+                value=False,
+                key="confirm_live_order",
+            )
+
         col1, col2, col3 = st.columns([1, 1, 2])
-        
+
         with col1:
-            if st.button("📋 Preview", use_container_width=True, key="preview_order"):
+            if st.button("Preview", use_container_width=True, key="preview_order"):
                 with st.spinner("Previewing order..."):
                     result = etrade_service.place_order(
                         account_id=account_id,
@@ -376,33 +393,45 @@ if service_status['is_authenticated']:
                         side=order_side,
                         order_type=order_type,
                         price=order_price,
-                        preview=True
+                        preview=True,
                     )
-                    if result:
-                        st.success("✅ Order preview successful")
-                        st.json(result.get('order_data', {}))
+                    if result and result.get("status") not in ("ERROR", "error"):
+                        st.session_state.pending_preview = result
+                        st.success("Order preview successful")
+                        st.json(result.get("order_data", result))
                     else:
-                        st.error("❌ Failed to preview order")
-        
+                        st.session_state.pending_preview = None
+                        st.error((result or {}).get("message") or "Failed to preview order")
+
         with col2:
-            if st.button("✅ Place Order", use_container_width=True, key="place_order"):
-                with st.spinner("Placing order..."):
-                    result = etrade_service.place_order(
-                        account_id=account_id,
-                        symbol=order_symbol,
-                        quantity=order_quantity,
-                        side=order_side,
-                        order_type=order_type,
-                        price=order_price,
-                        preview=False
-                    )
-                    if result:
-                        st.success("✅ Order placed successfully!")
-                        st.balloons()
-                        st.json(result.get('order_data', {}))
-                        st.rerun()
-                    else:
-                        st.error("❌ Failed to place order")
+            if st.button("Place Order", use_container_width=True, key="place_order"):
+                pending = st.session_state.get("pending_preview") or {}
+                preview_id = pending.get("preview_id")
+                if not preview_id:
+                    st.error("Preview first. Place is separate from preview; live will not one-shot.")
+                elif not is_sandbox and not confirm_live:
+                    st.error("LIVE place requires the per-order confirm checkbox.")
+                else:
+                    with st.spinner("Placing order..."):
+                        result = etrade_service.place_order(
+                            account_id=account_id,
+                            symbol=order_symbol,
+                            quantity=order_quantity,
+                            side=order_side,
+                            order_type=order_type,
+                            price=order_price,
+                            preview=False,
+                            preview_id=preview_id,
+                            client_order_id=pending.get("client_order_id"),
+                            confirm_live=confirm_live,
+                        )
+                        if result and result.get("status") not in ("ERROR", "error"):
+                            st.session_state.pending_preview = None
+                            st.success("Order placed")
+                            st.json(result)
+                            st.rerun()
+                        else:
+                            st.error((result or {}).get("message") or "Failed to place order")
         
         st.divider()
         

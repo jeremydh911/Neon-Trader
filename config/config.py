@@ -1,4 +1,4 @@
-"""Neon Trader configuration.
+"""AhanaTrade configuration.
 
 Credentials never live here. Load E*TRADE keys from the environment or a
 gitignored file (see README). Desk is sized to a $10k aggregate capital-out
@@ -17,10 +17,16 @@ ETRADE_AUTHORIZE_URL = "https://us.etrade.com/e/t/etws/authorize"
 
 DEFAULT_ETRADE_ENV = "sandbox"
 
-# Day-trading desk risk caps.
+# Day-trading desk risk caps. Single book — desk_risk.DeskRiskGate reads this.
 RISK = {
     "max_deployed_out_usd": 10000.0,
     "max_open_orders": 3,
+    "max_per_name_premarket_usd": 3500.0,
+    "max_per_name_afterhours_usd": 3500.0,
+    "max_per_name_regular_usd": 5000.0,
+    "max_names_premarket": 2,
+    "max_names_afterhours": 2,
+    "max_names_regular": 3,
     "daily_loss_halt_usd": 250.0,
     "daily_loss_halt_pct_equity": 0.025,
     "session_timezone": "America/New_York",
@@ -34,10 +40,13 @@ RISK = {
     "afterhours_open": "16:00",
     "afterhours_close": "20:00",
     "cancel_before_roll": "09:28",
+    "rth_flatten": "15:50",
+    "ah_flatten": "20:00",
     "include_premarket": True,
     "include_afterhours": True,
     "limit_only": True,
-    "long_only": True,
+    # Shorts allowed on cash/margin. IRA accounts are blocked in DeskRiskGate.
+    "long_only": False,
     "allow_crypto": False,
     "restrict_us_listed_only": False,
     "ui_timezone": "Pacific/Honolulu",
@@ -47,4 +56,6 @@ RISK = {
     "overnight_out": True,
     "follow_afterhours_working": True,
     "follow_min_tick": 0.01,
+    # Kona Latch is an experimental detector; default OFF.
+    "kona_latch_enabled": False,
 }

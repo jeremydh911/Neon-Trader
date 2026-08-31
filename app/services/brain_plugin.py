@@ -248,3 +248,49 @@ def _notify_adapters(event: str, payload: Dict[str, Any]) -> None:
         logger.debug("Chatwire notify skipped", exc_info=False)
 
 
+
+
+def annotate_catch(plan: Dict[str, Any], current_price: float = 0.0) -> Dict[str, Any]:
+    """Annotate a mechanical catch. Plugin brain if URL set, else local council stub."""
+    symbol = str((plan or {}).get("symbol") or "")
+    price = float(current_price or (plan or {}).get("limit_hi") or 0.0)
+    extra = {"catch": plan, "role": "annotate_setup"}
+    plugin = plugin_proposal(
+        symbol=symbol,
+        current_price=price,
+        indicators={"setup": (plan or {}).get("setup"), "why": (plan or {}).get("why")},
+        available_capital=float((plan or {}).get("remaining_budget") or 10000.0),
+        extra=extra,
+        timeout=12.0,
+    )
+    if plugin:
+        try:
+            from .ahana_memory import get_ahana_memory
+            get_ahana_memory().ingest(
+                {"kind": "brain_note", "symbol": symbol, "setup": (plan or {}).get("setup"), "payload": plugin}
+            )
+        except Exception:
+            logger.debug("brain_note ingest skipped", exc_info=False)
+        return plugin
+    stub = {
+        "agent": "council-stub",
+        "role": "council",
+        "symbol": symbol,
+        "action": (plan or {}).get("side") or "HOLD",
+        "confidence": 0.55,
+        "plan": (
+            "Local council stub: mechanical {setup} on {symbol}. "
+            "Plug in AHANA_BRAIN_URL to annotate catches."
+        ).format(setup=(plan or {}).get("setup") or "setup", symbol=symbol or "the tape"),
+        "approved": False,
+        "brain": "council",
+        "brain_note": "Local detector (council stub): mechanical levels only.",
+    }
+    try:
+        from .ahana_memory import get_ahana_memory
+        get_ahana_memory().ingest(
+            {"kind": "council_note", "symbol": symbol, "setup": (plan or {}).get("setup"), "payload": stub}
+        )
+    except Exception:
+        logger.debug("council_note ingest skipped", exc_info=False)
+    return stub

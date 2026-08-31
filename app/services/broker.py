@@ -441,6 +441,10 @@ class ETradeBroker(BrokerConnection):
         action = (side or "").strip().upper()
         if action in ("BUY", "OPEN"):
             action = "BUY"
+        elif action in ("BUY_TO_COVER", "COVER"):
+            action = "BUY_TO_COVER"
+        elif action in ("SELL_SHORT", "SHORT", "SHORT_SELL"):
+            action = "SELL_SHORT"
         elif action in ("SELL", "CLOSE"):
             action = "SELL"
         price_type = (order_type or "limit").strip().upper()
@@ -450,12 +454,15 @@ class ETradeBroker(BrokerConnection):
         if px is None:
             px = stop_price
 
-        from .desk_risk import deployed_out_from_positions
+        from .desk_risk import deployed_out_from_positions, name_deployed_from_positions, open_name_count
 
         account = self.get_account() or {}
         equity = float(account.get("portfolio_value") or account.get("net_account_value") or 0)
+        account_type = account.get("account_type") or account.get("accountType") or getattr(self, "account_type", "") or ""
         positions = self.get_positions() or {}
         deployed_out = deployed_out_from_positions(positions)
+        name_deployed = name_deployed_from_positions(positions, ticker)
+        open_names = open_name_count(positions)
         open_orders = self.count_open_orders()
 
         gate = self.risk.evaluate(
@@ -470,6 +477,9 @@ class ETradeBroker(BrokerConnection):
             is_new_entry=is_new_entry,
             now=now,
             skip_session_check=skip_session_check,
+            account_type=account_type,
+            name_deployed=name_deployed,
+            open_names=open_names,
         )
         if not gate.get("ok"):
             return {"status": "ERROR", "message": gate.get("message", "risk rejected"), "risk": gate}
@@ -847,11 +857,19 @@ class ETradeBroker(BrokerConnection):
                 ("buyingPower",),
                 ("cashBuyingPower",),
             )
+            account_type = ""
+            try:
+                listed = self._list_accounts()
+                first = listed[0] if listed else {}
+                account_type = str(first.get("accountType") or first.get("account_type") or "")
+            except Exception:
+                account_type = ""
             return {
                 "account_number": account_id_key,
                 "portfolio_value": portfolio_value,
                 "cash": cash,
                 "buying_power": buying_power,
+                "account_type": account_type,
                 "broker": "ETRADE",
                 "environment": "sandbox" if self.use_sandbox else "production",
                 "pdt_enforced": False,

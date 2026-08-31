@@ -2,6 +2,8 @@
 
 $10,000 aggregate capital-out cap. Session 07:00–20:00 America/New_York
 (pre-market through after-hours). LIMIT-only. Overnight out.
+Per-name: $3.5k PM/AH, $5k RTH. Max 2 names PM/AH, 3 RTH.
+Shorts allowed on cash/margin; IRA may not short.
 Does NOT enforce FINRA PDT or a $25k equity minimum.
 """
 
@@ -26,6 +28,12 @@ except Exception:  # pragma: no cover
         DEFAULT_RISK = {
             "max_deployed_out_usd": 10000.0,
             "max_open_orders": 3,
+            "max_per_name_premarket_usd": 3500.0,
+            "max_per_name_afterhours_usd": 3500.0,
+            "max_per_name_regular_usd": 5000.0,
+            "max_names_premarket": 2,
+            "max_names_afterhours": 2,
+            "max_names_regular": 3,
             "daily_loss_halt_usd": 250.0,
             "daily_loss_halt_pct_equity": 0.025,
             "session_timezone": "America/New_York",
@@ -35,14 +43,17 @@ except Exception:  # pragma: no cover
             "regular_close": "16:00",
             "afterhours_open": "16:00",
             "afterhours_close": "20:00",
+            "rth_flatten": "15:50",
+            "ah_flatten": "20:00",
             "include_premarket": True,
             "include_afterhours": True,
             "limit_only": True,
-            "long_only": True,
+            "long_only": False,
             "restrict_us_listed_only": False,
             "enforce_pdt": False,
             "overnight_out": True,
             "follow_min_tick": 0.01,
+            "kona_latch_enabled": False,
         }
 
 # Equities/ETFs on the REST Order API. No crypto pairs (BTC/USD, ETH-USD, …).
@@ -55,8 +66,10 @@ CRYPTO_TICKERS = {
 SHORT_SIDES = {"SELL_SHORT", "SHORT", "SHORT_SELL"}
 BUY_SIDES = {"BUY", "BUY_TO_COVER"}
 SELL_SIDES = {"SELL"}
+NEW_ENTRY_SIDES = {"BUY", "SELL_SHORT", "SHORT", "SHORT_SELL"}
 MARKET_TYPES = {"MARKET", "MKT", "MARKET_ON_CLOSE"}
 LIMIT_TYPES = {"LIMIT"}
+IRA_MARKERS = ("IRA", "ROTH", "SEP", "SIMPLE IRA", "ROLLOVER")
 
 
 def _parse_hhmm(value: str) -> time:
@@ -73,14 +86,22 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def is_ira_account(account_type: Optional[str]) -> bool:
+    """True when the brokerage account is an IRA (may not short)."""
+    raw = (account_type or "").strip().upper()
+    if not raw:
+        return False
+    return any(marker in raw for marker in IRA_MARKERS)
+
+
 def deployed_out_from_positions(positions: Optional[Dict[str, Any]]) -> float:
-    """Gross long notional currently deployed across all positions."""
+    """Gross notional currently deployed across all positions (long and short)."""
     total = 0.0
     for pos in (positions or {}).values():
         if not isinstance(pos, dict):
             continue
         qty = _as_float(pos.get("qty") or pos.get("quantity"), 0.0)
-        if qty <= 0:
+        if qty == 0:
             continue
         mv = pos.get("market_value")
         if mv is not None:
@@ -89,6 +110,38 @@ def deployed_out_from_positions(positions: Optional[Dict[str, Any]]) -> float:
         px = _as_float(pos.get("price") or pos.get("avg_fill_price"), 0.0)
         total += abs(qty * px)
     return total
+
+
+def name_deployed_from_positions(positions: Optional[Dict[str, Any]], symbol: str) -> float:
+    ticker = (symbol or "").strip().upper()
+    for key, pos in (positions or {}).items():
+        if not isinstance(pos, dict):
+            continue
+        name = str(pos.get("symbol") or key or "").strip().upper()
+        if name != ticker:
+            continue
+        qty = _as_float(pos.get("qty") or pos.get("quantity"), 0.0)
+        if qty == 0:
+            return 0.0
+        mv = pos.get("market_value")
+        if mv is not None:
+            return abs(_as_float(mv, 0.0))
+        px = _as_float(pos.get("price") or pos.get("avg_fill_price"), 0.0)
+        return abs(qty * px)
+    return 0.0
+
+
+def open_name_count(positions: Optional[Dict[str, Any]]) -> int:
+    names = set()
+    for key, pos in (positions or {}).items():
+        if not isinstance(pos, dict):
+            continue
+        qty = _as_float(pos.get("qty") or pos.get("quantity"), 0.0)
+        if qty == 0:
+            continue
+        names.add(str(pos.get("symbol") or key or "").strip().upper())
+    names.discard("")
+    return len(names)
 
 
 def et_now(now: Optional[datetime] = None) -> datetime:
@@ -113,6 +166,7 @@ class DeskRiskGate:
         state: Optional[DeskRiskState] = None,
         include_afterhours: bool = True,
         allow_market: bool = False,
+        account_type: Optional[str] = None,
     ):
         self.limits = {**DEFAULT_RISK, **(limits or {})}
         self.state = state or DeskRiskState()
@@ -121,6 +175,7 @@ class DeskRiskGate:
         )
         # Desk is LIMIT-only. The allow_market flag is ignored.
         self.allow_market = False
+        self.account_type = account_type or ""
 
     @property
     def extended_hours(self) -> bool:
@@ -226,6 +281,13 @@ class DeskRiskGate:
             "extended": session == "EXTENDED",
         }
 
+    def flatten_time(self, now: Optional[datetime] = None) -> str:
+        """Overnight snipes flat 15:50 ET; AH holds flatten at 20:00 ET."""
+        phase = self.phase(now)
+        if phase == "afterhours":
+            return str(self.limits.get("ah_flatten") or "20:00")
+        return str(self.limits.get("rth_flatten") or "15:50")
+
     def is_crypto_symbol(self, symbol: str) -> bool:
         raw = (symbol or "").strip().upper()
         if not raw:
@@ -256,6 +318,71 @@ class DeskRiskGate:
     def max_deployed_out(self) -> float:
         return _as_float(self.limits.get("max_deployed_out_usd"), 10000.0)
 
+    def remaining_sleeve(self, deployed_out: float = 0.0) -> float:
+        return max(self.max_deployed_out() - max(_as_float(deployed_out, 0.0), 0.0), 0.0)
+
+    def per_name_cap(self, now: Optional[datetime] = None) -> float:
+        phase = self.phase(now)
+        if phase == "regular":
+            return _as_float(self.limits.get("max_per_name_regular_usd"), 5000.0)
+        if phase == "afterhours":
+            return _as_float(self.limits.get("max_per_name_afterhours_usd"), 3500.0)
+        return _as_float(self.limits.get("max_per_name_premarket_usd"), 3500.0)
+
+    def max_names_allowed(self, now: Optional[datetime] = None) -> int:
+        phase = self.phase(now)
+        if phase == "regular":
+            return int(self.limits.get("max_names_regular") or 3)
+        if phase == "afterhours":
+            return int(self.limits.get("max_names_afterhours") or 2)
+        return int(self.limits.get("max_names_premarket") or 2)
+
+    def shorts_allowed(self, account_type: Optional[str] = None) -> bool:
+        acct = account_type if account_type is not None else self.account_type
+        if is_ira_account(acct):
+            return False
+        if bool(self.limits.get("long_only", False)):
+            return False
+        return True
+
+    def ira_short_note(self, account_type: Optional[str] = None, side: str = "") -> str:
+        acct = account_type if account_type is not None else self.account_type
+        action = (side or "").strip().upper()
+        if action not in SHORT_SIDES:
+            return "IRA may not short; cash/margin accounts may."
+        if is_ira_account(acct):
+            return "IRA account — short sales are blocked."
+        if bool(self.limits.get("long_only", False)):
+            return "Desk is in long-only mode — short sales blocked."
+        return "Cash/margin: shorts allowed. IRA accounts may not short."
+
+    def size_plan(
+        self,
+        *,
+        price: float,
+        deployed_out: float = 0.0,
+        name_deployed: float = 0.0,
+        now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Size a LIMIT under the remaining $10k sleeve and the per-name cap."""
+        sleeve = self.remaining_sleeve(deployed_out)
+        name_cap = self.per_name_cap(now=now)
+        name_room = max(name_cap - max(_as_float(name_deployed, 0.0), 0.0), 0.0)
+        budget = min(sleeve, name_room)
+        px = _as_float(price, 0.0)
+        shares = int(budget // px) if px > 0 else 0
+        notional = round(shares * px, 2) if px > 0 else 0.0
+        return {
+            "budget_usd": round(budget, 2),
+            "sized_usd": notional,
+            "shares": shares,
+            "sleeve": round(sleeve, 2),
+            "name_cap": name_cap,
+            "name_room": round(name_room, 2),
+            "flatten_time": self.flatten_time(now),
+            "phase": self.phase(now),
+        }
+
     def evaluate(
         self,
         *,
@@ -270,6 +397,10 @@ class DeskRiskGate:
         is_new_entry: Optional[bool] = None,
         now: Optional[datetime] = None,
         skip_session_check: bool = False,
+        account_type: Optional[str] = None,
+        name_deployed: float = 0.0,
+        open_names: int = 0,
+        is_new_name: Optional[bool] = None,
     ) -> Dict[str, Any]:
         ticker = (symbol or "").strip().upper()
         action = (side or "").strip().upper()
@@ -277,6 +408,7 @@ class DeskRiskGate:
         quantity = int(qty or 0)
         px = _as_float(price, 0.0)
         phase = self.phase(now)
+        acct = account_type if account_type is not None else self.account_type
 
         if quantity <= 0:
             return self._reject("quantity must be > 0")
@@ -286,13 +418,15 @@ class DeskRiskGate:
             )
         if not self.is_allowed_symbol(ticker):
             return self._reject(f"{ticker or '(blank)'} is not a valid tradable symbol")
-        if bool(self.limits.get("long_only", True)) and action in SHORT_SIDES:
+        if action in SHORT_SIDES and not self.shorts_allowed(acct):
+            if is_ira_account(acct):
+                return self._reject("short sales are not allowed on IRA accounts")
             return self._reject("short sales are not allowed (long-only desk)")
         if action not in BUY_SIDES | SELL_SIDES | SHORT_SIDES:
             return self._reject(f"unsupported side {action}")
 
         if is_new_entry is None:
-            is_new_entry = action in BUY_SIDES
+            is_new_entry = action in NEW_ENTRY_SIDES
 
         if price_type in MARKET_TYPES or price_type not in LIMIT_TYPES:
             return self._reject("desk is LIMIT-only; market/stop orders are disabled")
@@ -320,6 +454,22 @@ class DeskRiskGate:
                     f"aggregate deployed-out ${projected:,.2f} would exceed ${cap:,.2f} cap "
                     f"(currently ${current_out:,.2f} out, ${room:,.2f} remaining)"
                 )
+            name_cap = self.per_name_cap(now=now)
+            current_name = max(_as_float(name_deployed, 0.0), 0.0)
+            projected_name = current_name + notional
+            if projected_name > name_cap:
+                return self._reject(
+                    f"per-name cap ${name_cap:,.2f} for {phase} would be exceeded "
+                    f"(${projected_name:,.2f} on {ticker})"
+                )
+            if is_new_name is None:
+                is_new_name = current_name <= 0
+            if is_new_name:
+                allowed_names = self.max_names_allowed(now=now)
+                if int(open_names or 0) >= allowed_names:
+                    return self._reject(
+                        f"max {allowed_names} names already reached in {phase}"
+                    )
 
         max_open = int(self.limits.get("max_open_orders") or 3)
         if open_orders >= max_open:
@@ -351,6 +501,10 @@ class DeskRiskGate:
             "market_session": flags["marketSession"],
             "order_term": flags["orderTerm"],
             "extended": flags["extended"],
+            "flatten_time": self.flatten_time(now),
+            "remaining_sleeve": self.remaining_sleeve(current_out + (notional if is_new_entry else 0)),
+            "shorts_allowed": self.shorts_allowed(acct),
+            "ira": is_ira_account(acct),
         }
 
     def record_realized_pnl(self, amount: float) -> None:

@@ -8,38 +8,41 @@ This is not investment advice and nothing here is a guaranteed return.
 
 ## Product
 
-AhanaTrade is the Streamlit desk. A dark premium splash is the landing page; **Enter the desk** opens the existing E*TRADE workspace.
+AhanaTrade is the Streamlit desk. A dark premium splash is the landing page; **Enter the desk** opens a single workspace: chart with the levels the catcher is using, a plan-alert feed, remaining budget, and E*TRADE OAuth with preview-then-place.
 
 - **Session**: 7:00am–8:00pm ET (Hawaii UI is ET-6 in August)
 - **Orders**: LIMIT + GOOD_FOR_DAY only (EXTENDED premarket / after-hours)
-- **Risk**: $10,000 aggregate deployed-out; max 3 open orders; overnight flat after 8:00pm ET
-- **Brain**: Plug in a Grok Bot or any OpenAI-compatible / webhook agent via `AHANA_BRAIN_URL`. If unset, the Tina / Eddie / Gloria / Victor / Riley council stays in charge.
+- **Risk**: $10,000 aggregate deployed-out; $3.5k/name PM/AH, $5k RTH; max 2 names PM/AH, 3 RTH; overnight snipes flat 15:50 ET (20:00 if AH)
+- **Catcher**: Mechanical setups A/B/C/D on OHLCV (public tape if broker quotes are missing). Each catch is a plan card sized under the remaining sleeve.
+- **Brain**: Plug in a Grok Bot or any OpenAI-compatible / webhook agent via `AHANA_BRAIN_URL`. If unset, a local council stub annotates catches.
+- **Memory**: AhanaFlow lookback (compressed KV + RAG). SDK is import-or-stub; local gzip JSONL fallback so history still accumulates.
 - **Broker**: E*TRADE sandbox first. Live requires `ETRADE_ENV=production` **and** per-order `confirm_live=True`.
 
-Sister products (AhanaFlow, AhanaZip, Chatwire / Cloud Wire, aarmOS) are private. This public tree only ships env-gated import-or-stub adapters — it does not vendor their source.
+Sister products (AhanaZip, Chatwire / Cloud Wire, aarmOS) are private. Public AhanaFlow lives at [AhanaAi-Company/AhanaFlow](https://github.com/AhanaAi-Company/AhanaFlow) — this tree never vendors that `sdk/`.
 
 ## Features
 
 - **Splash / landing**: AhanaTrade hero, session rules, CTA into the desk. No live balances or quotes on the splash.
-- **Multi-agent council** (default brain): Tina, Eddie, Gloria, Victor, Riley
-- **Plug-in brain**: `AHANA_BRAIN_URL` + optional `AHANA_BRAIN_TOKEN`
-- **Private-stack adapters** (no-op if the package is missing): AhanaFlow session/memory bus, Chatwire transport, AhanaZip pack
-- **Persistent learning**: per-agent RAG + online learners
-- **Leaderboard**: +1 per $ won, -1.3 per $ lost
-- **Observability**: OpenTelemetry tracing
-- **Docker**: CPU/GPU containers with MCP ticker/chart services
+- **Desk chart**: Candles plus VWAP, opening 15m range, PM 7–9 range, and the invalidation the catcher is using.
+- **Strategy catch**: A ORB, B VWAP reclaim/reject, C premarket range, D peak/valley on holdings (trim peaks, buy dips, leave a runner).
+- **Plan alerts**: Symbol, setup, side, limit zone, size $ and shares under remaining budget, invalidation, flatten time, why it fired, IRA-short note, similar past setups.
+- **Budget**: Single book in `desk_risk.py` / `config.RISK` — not a second ledger.
+- **E*TRADE ticket**: OAuth, preview, then place. Live will not one-shot.
+- **Plug-in brain**: `AHANA_BRAIN_URL` + optional `AHANA_BRAIN_TOKEN` annotates catches when set.
+- **AhanaFlow memory**: Compressed lookback of plans/alerts/fills. Local gzip JSONL if the SDK is not installed.
+- **Private-stack adapters** (no-op if the package is missing): AhanaZip pack, Chatwire transport.
 
 ## Architecture Overview
 
 ```text
 Splash (AhanaTrade) → Enter the desk
     ↓
-Streamlit UI (E*TRADE Dashboard / Trading)
-    ↓
-CouncilOrchestrator
-├─ Plug-in brain (AHANA_BRAIN_URL)  OR  Tina/Eddie/Gloria/Victor/Riley
-└─ Backend execution (approved LIMIT orders)
-    └─ ETradeBroker  (sandbox default; live gated)
+Desk workspace
+├─ Chart overlays (VWAP / OR / PM / invalidation)
+├─ Strategy catcher A/B/C/D → plan cards
+├─ AhanaMemory RAG (similar past setups)
+└─ E*TRADE preview → place
+    └─ DeskRiskGate  (LIMIT, $10k-out, per-name, IRA shorts)
 ```
 
 ## Quick Start
@@ -52,7 +55,9 @@ export OTLP_ENABLED=false
 streamlit run app/app.py
 ```
 
-Then open `http://localhost:8501`. The splash is Home; **Enter the desk** goes to Trading.
+Then open `http://localhost:8501`. The splash is Home; **Enter the desk** opens the workspace.
+
+`streamlit run app/main.py` is the same desk plus the OAuth sidebar.
 
 ### With Docker
 
@@ -62,17 +67,6 @@ docker compose up --build
 ```
 
 Access at `http://localhost:8501`.
-
-### With Tracing (Jaeger)
-
-```bash
-docker run -d --name jaeger -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:latest
-export OTLP_ENABLED=true
-export OTLP_ENDPOINT=http://localhost:4317
-streamlit run app/app.py
-```
-
-View traces at `http://localhost:16686`.
 
 ## Plug-in agent brain
 
@@ -84,21 +78,23 @@ Set these in the environment (never commit tokens):
 | `AHANA_BRAIN_TOKEN` | _(unset)_ | Optional bearer token |
 | `AHANA_BRAIN_MODEL` | `grok` | Model id when the URL is OpenAI-compatible |
 
-If `AHANA_BRAIN_URL` is unset, the desk uses the existing council. If the plugin call fails, it falls back to the council.
+If `AHANA_BRAIN_URL` is unset, the desk uses a local council stub to annotate catches. If the plugin call fails, it falls back to the stub.
 
 See `app/services/brain_plugin.py`.
 
-## Private-stack adapters
+## AhanaFlow lookback + AhanaZip
 
-Optional, env-gated, import-or-stub. Missing packages log and no-op.
+Install the public SDK from [AhanaAi-Company/AhanaFlow](https://github.com/AhanaAi-Company/AhanaFlow) `sdk/` if you want the remote compressed KV + vector RAG. Do not copy that source into this repo.
 
-| Adapter | Env | Role |
-|---------|-----|------|
-| AhanaFlow | `AHANAFLOW_URL` | Session / memory bus |
-| Chatwire / Cloud Wire | `CHATWIRE_URL` or `CLOUDWIRE_URL` | Compressed agent message transport |
-| AhanaZip | `AHANAZIP_DIR` | Artifact compress / pack |
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `AHANAFLOW_URL` | _(unset)_ | Remote AhanaFlow endpoint. Remote put/get/query only when the `ahanaflow` package is also installed. |
+| `AHANAFLOW_LICENSE` / `AHANAFLOW_TOKEN` | _(unset)_ | Optional license/token (never logged, never committed) |
+| `AHANAFLOW_DATA_DIR` | `data/ahanaflow/` | Local gzip JSONL lookback (gitignored) |
+| `AHANAZIP_DIR` | _(unset)_ | Enable AhanaZip blob compress if the private package is installed; else stdlib gzip |
+| `CHATWIRE_URL` | _(unset)_ | Chatwire transport if the package is installed |
 
-Do not clone or copy `jeremydh911/AhanaFlow`, `jeremydh911/AhanaZip`, `jeremydh911/Chatwire`, or aarmOS into this public tree.
+Without the SDK, `put()` / `get()` / `query()` / `list_range()` still persist gzip-compressed JSONL under `data/ahanaflow/`. Never pickle. The desk RAG facade (`app/services/ahana_memory.py`) is a memory layer only — not a second trading brain.
 
 ## E*TRADE day-trading desk
 
@@ -134,13 +130,17 @@ Hawaii UI is **ET-6 in August** (HST vs EDT).
 | 16:00–20:00 | After-hours | `EXTENDED` + `LIMIT` + `GOOD_FOR_DAY`; unfilled working limits are repriced as the tape moves |
 | 20:00–07:00 | Overnight out | No overnight risk |
 
-All orders are LIMIT. Crypto is not sent on the REST Order API (account entitlement
-does not override that). PDT / $25k is **not** enforced in-app; if E*TRADE rejects a
-day trade, the error is surfaced.
+All orders are LIMIT. Crypto is not sent on the REST Order API. PDT / $25k is **not** enforced in-app; if E*TRADE rejects a day trade, the error is surfaced.
+
+Overnight snipes flatten at **15:50 ET** (20:00 if the desk is still in after-hours).
+
+Shorts are allowed on cash/margin accounts. IRA accounts may not short.
 
 ### Risk caps
 
 - Max **$10,000 deployed-out aggregate** across positions
+- **$3,500 / name** premarket and after-hours; **$5,000 / name** RTH
+- Max **2 names** PM/AH, **3 names** RTH
 - Max 3 open orders
 - Daily-loss halt for **new entries only**: min($250, 2.5% equity)
 - Unique `clientOrderId` ≤ 20 alphanumeric
@@ -155,11 +155,12 @@ day trade, the error is surfaced.
 | `ETRADE_ACCESS_TOKEN` | _(after OAuth)_ | Expires midnight ET / idle ~2h |
 | `ETRADE_ACCESS_TOKEN_SECRET` | _(after OAuth)_ | Pair with access token |
 | `ETRADE_OAUTH_STATE_FILE` | `~/.secrets/etrade_oauth_request.json` | JSON request-token store (mode 0600) |
-| `AHANA_BRAIN_URL` | _(unset)_ | Plug-in brain; council used if empty |
+| `AHANA_BRAIN_URL` | _(unset)_ | Plug-in brain; council stub used if empty |
 | `AHANA_BRAIN_TOKEN` | _(unset)_ | Optional bearer auth for the brain |
-| `AHANAFLOW_URL` | _(unset)_ | Enable AhanaFlow adapter if the package is installed |
+| `AHANAFLOW_URL` | _(unset)_ | Remote AhanaFlow; local gzip JSONL always on |
+| `AHANAZIP_DIR` | _(unset)_ | Enable AhanaZip if the package is installed |
 | `CHATWIRE_URL` | _(unset)_ | Enable Chatwire adapter if the package is installed |
-| `AHANAZIP_DIR` | _(unset)_ | Enable AhanaZip adapter if the package is installed |
+| `AHANA_KONA_LATCH` | `0` | Experimental detector, default off |
 | `OTLP_ENABLED` | `true` | Disable if no collector available |
 | `OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry collector address |
 | `ALLOW_EARLY_START` | `true` | Start UI before LLM ready |
@@ -170,15 +171,14 @@ day trade, the error is surfaced.
 | File | Purpose |
 |------|---------|
 | `app/components/splash.py` | Retail splash / landing page |
+| `app/components/desk.py` | Primary desk: chart, plans, budget, ticket |
+| `app/services/strategy_catcher.py` | A/B/C/D detectors → plan cards |
+| `app/services/desk_risk.py` | Session, LIMIT-only, $10k-out, per-name, IRA shorts |
+| `app/services/ahana_memory.py` | Thin RAG over AhanaFlow / local gzip JSONL |
+| `app/services/adapters/ahanaflow.py` | Store put/get/query (SDK or local fallback) |
 | `app/services/brain_plugin.py` | Plug-in brain (Grok / OpenAI-compatible / webhook) |
-| `app/services/adapters/` | AhanaFlow, Chatwire, AhanaZip stubs |
-| `agent_framework.py` | Orchestration; honors plugin brain when configured |
-| `specialist_agents.py` | Named team: Tina, Eddie, Gloria, Victor, Riley |
-| `trading_council.py` | Council voting (used when no plugin brain) |
-| `autonomous_trader.py` | Backend trader with broker interface |
-| `broker.py` | E*TRADE execution path |
-| `desk_risk.py` | Session, LIMIT-only, $10k-out |
-| `app/app.py` | Streamlit UI (splash + desk) |
+| `app/services/broker.py` | E*TRADE execution path |
+| `app/app.py` / `app/main.py` | Streamlit UI (splash + desk) |
 
 ## Testing
 
@@ -186,21 +186,7 @@ day trade, the error is surfaced.
 pytest
 ```
 
-## Troubleshooting
-
-### App won't start
-
-- Check Python 3.11+: `python --version`
-- Install deps: `pip install -r docker/requirements.cpu.txt`
-
-### No traces appearing
-
-- Verify Jaeger: `docker ps | grep jaeger`
-- Set `OTLP_ENDPOINT=http://localhost:4317`
-
-### Database errors
-
-- Remove stale DB: `rm ./data/leaderboard.db`
+Tests never call `api.etrade.com`. Detectors run on synthetic OHLCV. AhanaFlow tests use the local gzip JSONL fallback.
 
 ## License
 

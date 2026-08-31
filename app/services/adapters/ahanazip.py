@@ -1,14 +1,16 @@
 """AhanaZip artifact compress/pack adapter (optional, private stack).
 
 Import-or-stub: if the `ahanazip` package is not installed, or AHANAZIP_DIR
-is unset, log and no-op. This public tree never vendors AhanaZip source.
+is unset, blob helpers fall back to stdlib gzip. This public tree never
+vendors AhanaZip source.
 """
 
 from __future__ import annotations
 
+import gzip
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ try:
     import ahanazip as _mod  # type: ignore
     logger.info("AhanaZip adapter: package present")
 except ImportError:
-    logger.info("AhanaZip adapter: package not installed; compress/pack is a no-op stub")
+    logger.info("AhanaZip adapter: package not installed; compress uses stdlib gzip")
     _mod = None
 
 
@@ -63,3 +65,42 @@ def unpack_artifact(path: str, dest: Optional[str] = None) -> Optional[Any]:
     except Exception:
         logger.warning("AhanaZip unpack_artifact failed; continuing")
         return None
+
+
+def compress_blob(data: Union[bytes, bytearray, str]) -> bytes:
+    """Compress bytes via AhanaZip when enabled, else stdlib gzip."""
+    raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+    if enabled():
+        fn = (
+            getattr(_mod, "compress_blob", None)
+            or getattr(_mod, "compress_bytes", None)
+            or getattr(_mod, "compress", None)
+        )
+        if callable(fn):
+            try:
+                packed = fn(raw)
+                if isinstance(packed, (bytes, bytearray)):
+                    return bytes(packed)
+            except Exception:
+                logger.warning("AhanaZip compress_blob failed; gzip fallback")
+    return gzip.compress(raw)
+
+
+def decompress_blob(data: Union[bytes, bytearray]) -> bytes:
+    raw = bytes(data)
+    if enabled():
+        fn = (
+            getattr(_mod, "decompress_blob", None)
+            or getattr(_mod, "decompress_bytes", None)
+            or getattr(_mod, "decompress", None)
+        )
+        if callable(fn):
+            try:
+                out = fn(raw)
+                if isinstance(out, (bytes, bytearray)):
+                    return bytes(out)
+                if isinstance(out, str):
+                    return out.encode("utf-8")
+            except Exception:
+                logger.warning("AhanaZip decompress_blob failed; gzip fallback")
+    return gzip.decompress(raw)

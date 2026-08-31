@@ -277,10 +277,20 @@ class ETradeService:
             logger.error("Not authenticated - cannot place order")
             return None
 
-        side_norm = (side or "").strip().capitalize()
-        if side_norm not in ['Buy', 'Sell']:
+        raw_side = (side or "").strip().upper().replace(" ", "_")
+        side_map = {
+            "BUY": "Buy",
+            "SELL": "Sell",
+            "SELL_SHORT": "SELL_SHORT",
+            "SHORT": "SELL_SHORT",
+            "SHORT_SELL": "SELL_SHORT",
+            "BUY_TO_COVER": "BUY_TO_COVER",
+            "COVER": "BUY_TO_COVER",
+        }
+        if raw_side not in side_map:
             logger.error("Invalid side: %s", side)
             return None
+        side_norm = side_map[raw_side]
 
         if (order_type or "").lower() in ('limit', 'stop', 'stop_limit') and not price:
             logger.error("Price required for %s orders", order_type)
@@ -290,7 +300,7 @@ class ETradeService:
             kwargs = dict(
                 symbol=symbol,
                 qty=int(quantity),
-                side=side_norm.lower(),
+                side=side_norm,
                 order_type=(order_type or "limit").lower(),
                 limit_price=price if (order_type or "").lower() in ("limit", "stop_limit") else None,
                 stop_price=price if (order_type or "").lower() in ("stop", "stop_limit") else None,
@@ -317,6 +327,15 @@ class ETradeService:
                 preview_id=preview_id,
                 confirm_live=confirm_live,
             )
+            try:
+                from .ahana_memory import get_ahana_memory
+                get_ahana_memory().ingest({
+                    "kind": "fill" if (result or {}).get("status") == "PLACED" else "alert",
+                    "symbol": symbol,
+                    "payload": {"preview_id": preview_id, "result": result, "side": side_norm, "qty": quantity},
+                })
+            except Exception:
+                logger.debug("fill ingest skipped", exc_info=False)
             return result
         except Exception as e:
             logger.error("Failed to place order: %s", e)

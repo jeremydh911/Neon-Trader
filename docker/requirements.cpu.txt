@@ -6,6 +6,9 @@ numpy
 python-dotenv
 pandas
 scikit-learn
+streamlit
+plotly
+yfinance
 
 # OpenTelemetry tracing and observability
 opentelemetry-api

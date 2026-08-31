@@ -111,7 +111,7 @@ HERO_HTML = """
 <div class="ahana-splash">
   <div class="ahana-kicker">Retail day-trading desk</div>
   <h1 class="ahana-hero-name">Ahana<span>Trade</span></h1>
-  <p class="ahana-tag">Limit-only E*TRADE execution. Plug in a Grok Bot — or any OpenAI-compatible agent — as the brain. Sandbox first. Live is gated.</p>
+  <p class="ahana-tag">Charts, strategy catch, and plan alerts under a $10k sleeve. Plug in a Grok Bot — or any OpenAI-compatible agent — as the brain. Sandbox first. Live is gated.</p>
   <div class="ahana-rule"></div>
   <div class="ahana-chips">
     <div class="ahana-chip">
@@ -128,7 +128,7 @@ HERO_HTML = """
     </div>
     <div class="ahana-chip">
       <h4>Brain</h4>
-      <p>Plug-and-play agent</p>
+      <p>Catch · plan · brain</p>
     </div>
   </div>
   <p class="ahana-note">No live balances or quotes on this page. Connect the desk to see your account.</p>

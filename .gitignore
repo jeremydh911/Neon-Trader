@@ -62,3 +62,10 @@ etrade_oauth_request.json
 etrade_oauth_tokens.json
 **/etrade_oauth_request.json
 **/etrade_oauth_tokens.json
+# AhanaFlow local lookback (gzip JSONL) and RAG embeddings
+data/ahanaflow/
+data/ahanaflow/**
+**/records.jsonl.gz
+data/memory/
+data/memory/**
+**/embeddings.json.gz

@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services.desk_risk import DeskRiskGate, DeskRiskState, deployed_out_from_positions
+from app.services.desk_risk import DeskRiskGate, DeskRiskState, deployed_out_from_positions, is_ira_account
 from app.services.etrade_config import is_sandbox, etrade_hosts, allow_market_orders
 from app.services.working_order_follower import next_follow_limit, follow_instructions, normalize_open_orders
 from app.services import broker as broker_mod
@@ -294,3 +294,69 @@ def test_deployed_out_helper():
         "MSFT": {"qty": 5, "price": 400},
     })
     assert total == 3000
+
+
+def test_shorts_allowed_on_cash_blocked_on_ira():
+    gate = DeskRiskGate()
+    cash = gate.evaluate(
+        symbol="AAPL", qty=1, side="SELL_SHORT", order_type="LIMIT", price=100,
+        now=_et(10, 0), account_type="CASH",
+    )
+    assert cash["ok"] is True
+    ira = gate.evaluate(
+        symbol="AAPL", qty=1, side="SELL_SHORT", order_type="LIMIT", price=100,
+        now=_et(10, 0), account_type="ROTH_IRA",
+    )
+    assert ira["ok"] is False
+    assert "IRA" in ira["message"]
+    assert is_ira_account("ROTH IRA") is True
+    assert is_ira_account("INDIVIDUAL") is False
+
+
+def test_per_name_and_max_names_caps():
+    gate = DeskRiskGate()
+    # RTH $5k/name
+    ok = gate.evaluate(
+        symbol="AAPL", qty=40, side="BUY", order_type="LIMIT", price=100,
+        now=_et(10, 0), deployed_out=0, name_deployed=0,
+    )
+    assert ok["ok"] is True
+    blocked = gate.evaluate(
+        symbol="AAPL", qty=60, side="BUY", order_type="LIMIT", price=100,
+        now=_et(10, 0), deployed_out=0, name_deployed=0,
+    )
+    assert blocked["ok"] is False
+    assert "per-name" in blocked["message"]
+    # PM $3.5k/name
+    pm_block = gate.evaluate(
+        symbol="MSFT", qty=40, side="BUY", order_type="LIMIT", price=100,
+        now=_et(8, 0), deployed_out=0, name_deployed=0,
+    )
+    assert pm_block["ok"] is False
+    names = gate.evaluate(
+        symbol="NVDA", qty=1, side="BUY", order_type="LIMIT", price=100,
+        now=_et(8, 0), open_names=2, name_deployed=0, is_new_name=True,
+    )
+    assert names["ok"] is False
+    assert "names" in names["message"]
+
+
+def test_plan_sizing_vs_caps():
+    gate = DeskRiskGate()
+    sized = gate.size_plan(price=100, deployed_out=7000, name_deployed=0, now=_et(10, 0))
+    assert sized["sleeve"] == 3000
+    assert sized["name_cap"] == 5000
+    assert sized["budget_usd"] == 3000
+    assert sized["shares"] == 30
+    pm = gate.size_plan(price=100, deployed_out=0, name_deployed=0, now=_et(8, 0))
+    assert pm["name_cap"] == 3500
+    assert pm["shares"] == 35
+    assert gate.flatten_time(_et(10, 0)) == "15:50"
+    assert gate.flatten_time(_et(17, 0)) == "20:00"
+
+
+def test_rag_memory_has_no_pickle():
+    src = open("app/services/rag_memory.py").read()
+    assert "import pickle" not in src
+    assert "pickle." not in src
+    assert "embeddings.json.gz" in src

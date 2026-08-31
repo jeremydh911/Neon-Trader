@@ -8,7 +8,7 @@ from typing import List
 from datetime import datetime, timedelta
 import random
 
-app = FastAPI(title="Neon Trader Ticker Service")
+app = FastAPI(title="AhanaTrade Ticker Service")
 
 
 class TickerPoint(BaseModel):

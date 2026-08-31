@@ -1,6 +1,6 @@
-# Neon Trader Docker Setup
+# AhanaTrade Docker Setup
 
-This folder contains scaffolding to run Neon Trader components with Docker and Docker Compose.
+This folder contains scaffolding to run AhanaTrade components with Docker and Docker Compose.
 
 ## Services
 

@@ -176,7 +176,7 @@ with tab1:
             st.markdown("""
             <div class="step-card">
                 <h3>Step 1: Open Authorization URL</h3>
-                <p>Click the link below to authorize Neon Trader with E*TRADE:</p>
+                <p>Click the link below to authorize AhanaTrade with E*TRADE:</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -371,7 +371,7 @@ with tab3:
 st.divider()
 st.markdown("""
 ---
-**E*TRADE OAuth Callback Manager** | Neon Trader v1.0
+**E*TRADE OAuth Callback Manager** | AhanaTrade
 - Flow: Callback-based (automatic verification code capture)
 - Protocol: OAuth 1.0a
 - Environment: Sandbox (Paper Trading)

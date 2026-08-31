@@ -236,13 +236,37 @@ class AutonomousTraderScheduler:
             if shares < 1:
                 return {'status': 'ERROR', 'message': f'Position too small ({shares} shares)'}
             
-            # Place order
-            order_result = self.broker.place_order(
-                symbol=symbol,
-                qty=shares,
-                side=signal_type.lower(),
-                order_type='market'
-            )
+            # LIMIT preview-then-place (never one-shot in live)
+            limit_price = current_price
+            if hasattr(self.broker, "preview_order"):
+                preview = self.broker.preview_order(
+                    symbol=symbol,
+                    qty=shares,
+                    side=signal_type.lower(),
+                    order_type="limit",
+                    limit_price=limit_price,
+                    estimated_price=limit_price,
+                )
+                if not preview or preview.get("status") in ("ERROR", "error"):
+                    self.log_event("TRADE_FAILED", f"{signal_type} {shares} {symbol}: {(preview or {}).get('message')}")
+                    return preview or {"status": "ERROR", "message": "preview failed"}
+                order_result = self.broker.place_order(
+                    symbol=symbol,
+                    qty=shares,
+                    side=signal_type.lower(),
+                    order_type="limit",
+                    limit_price=limit_price,
+                    preview_id=preview.get("preview_id"),
+                    client_order_id=preview.get("client_order_id"),
+                )
+            else:
+                order_result = self.broker.place_order(
+                    symbol=symbol,
+                    qty=shares,
+                    side=signal_type.lower(),
+                    order_type="limit",
+                    limit_price=limit_price,
+                )
             
             if order_result.get('status') == 'ERROR':
                 self.log_event('TRADE_FAILED', f"{signal_type} {shares} {symbol}: {order_result.get('message')}")

@@ -320,3 +320,65 @@ class ChartVisualizer:
         """
         
         return summary
+
+
+    def create_desk_chart(self, symbol, bars, overlays=None, title=None):
+        """Candlestick desk chart with VWAP, OR, PM 7:00–9:20, holdings peak/valley, and invalidation."""
+        if not self.plotly_available:
+            return {"error": "Plotly not available"}
+        overlays = overlays or {}
+        rows = []
+        if hasattr(bars, "to_dict") and callable(getattr(bars, "reset_index", None)):
+            try:
+                recs = bars.reset_index().to_dict("records")
+                for rec in recs:
+                    item = {str(k).lower(): v for k, v in rec.items()}
+                    item["ts"] = item.get("datetime") or item.get("date") or item.get("timestamp") or item.get("index")
+                    rows.append(item)
+            except Exception:
+                rows = []
+        elif isinstance(bars, list):
+            for bar in bars:
+                if isinstance(bar, dict):
+                    item = {str(k).lower(): v for k, v in bar.items()}
+                    item.setdefault("ts", item.get("datetime") or item.get("date") or item.get("timestamp"))
+                    rows.append(item)
+        if not rows:
+            return {"error": "no bars"}
+        xs, o, h, l, c = [], [], [], [], []
+        for bar in rows:
+            xs.append(bar.get("ts"))
+            o.append(float(bar.get("open") or bar.get("o") or 0))
+            h.append(float(bar.get("high") or bar.get("h") or 0))
+            l.append(float(bar.get("low") or bar.get("l") or 0))
+            c.append(float(bar.get("close") or bar.get("c") or 0))
+        fig = self.go.Figure()
+        fig.add_trace(self.go.Candlestick(x=xs, open=o, high=h, low=l, close=c, name=symbol, increasing_line_color="#3dccc7", decreasing_line_color="#e07a5f"))
+        levels = [
+            ("vwap", overlays.get("vwap"), "#c9a227", "dash", "VWAP"),
+            ("or_high", overlays.get("or_high"), "#7bdff2", "dot", "OR high"),
+            ("or_low", overlays.get("or_low"), "#7bdff2", "dot", "OR low"),
+            ("pm_high", overlays.get("pm_high"), "#9b8ec4", "dashdot", "PM 7:00–9:20 high"),
+            ("pm_low", overlays.get("pm_low"), "#9b8ec4", "dashdot", "PM 7:00–9:20 low"),
+            ("peak", overlays.get("peak"), "#f2cc8f", "dot", "Holdings peak"),
+            ("valley", overlays.get("valley"), "#81b29a", "dot", "Holdings valley"),
+            ("invalidation", overlays.get("invalidation"), "#e07a5f", "dash", "Invalidation"),
+        ]
+        for _key, val, color, dash, label in levels:
+            if val is None or val == "":
+                continue
+            try:
+                y = float(val)
+            except (TypeError, ValueError):
+                continue
+            fig.add_hline(y=y, line_dash=dash, line_color=color, annotation_text=label, annotation_position="right")
+        fig.update_layout(
+            title=title or f"{symbol} desk",
+            template="plotly_dark",
+            height=460,
+            paper_bgcolor="#07090f",
+            plot_bgcolor="#0c1220",
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        return {"figure": fig, "symbol": symbol, "overlays": overlays}

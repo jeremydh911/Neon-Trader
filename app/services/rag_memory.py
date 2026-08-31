@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 import hashlib
 from pathlib import Path
-import pickle
+import gzip
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class RAGMemoryStore:
         self.embedder = VectorEmbedder()
         
         self.memories_file = self.storage_path / "memories.json"
-        self.embeddings_file = self.storage_path / "embeddings.pkl"
+        self.embeddings_file = self.storage_path / "embeddings.json.gz"
         
         self._load_memories()
     
@@ -106,8 +106,10 @@ class RAGMemoryStore:
                 logger.info(f"Loaded {len(self.memories)} memories from disk")
             
             if self.embeddings_file.exists():
-                with open(self.embeddings_file, 'rb') as f:
-                    self.embeddings = pickle.load(f)
+                with gzip.open(self.embeddings_file, "rt", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        self.embeddings = loaded
                 logger.info(f"Loaded {len(self.embeddings)} embeddings from disk")
         except Exception as e:
             logger.error(f"Error loading memories: {e}")
@@ -118,8 +120,8 @@ class RAGMemoryStore:
             with open(self.memories_file, 'w') as f:
                 json.dump([m.to_dict() for m in self.memories], f, indent=2)
             
-            with open(self.embeddings_file, 'wb') as f:
-                pickle.dump(self.embeddings, f)
+            with gzip.open(self.embeddings_file, "wt", encoding="utf-8") as f:
+                json.dump(self.embeddings, f)
         except Exception as e:
             logger.error(f"Error saving memories: {e}")
     

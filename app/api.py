@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Neon Trader API",
+    title="AhanaTrade API",
     description="GPU-Accelerated Trading Platform API",
     version="1.0.0"
 )

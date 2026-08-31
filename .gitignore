@@ -1,5 +1,10 @@
 # --- Secrets / credentials (never commit) ---
 # E*TRADE
+etrade.env
+**/etrade.env
+.secrets/
+**/.secrets/
+*.etrade.env
 app/config/etrade-credentials.json
 config/etrade-credentials.json
 **/etrade-credentials.json
@@ -51,3 +56,16 @@ app/.streamlit/
 
 # Portainer
 .portainer_token
+
+# OAuth JSON token store (never commit)
+etrade_oauth_request.json
+etrade_oauth_tokens.json
+**/etrade_oauth_request.json
+**/etrade_oauth_tokens.json
+# AhanaFlow local lookback (gzip JSONL) and RAG embeddings
+data/ahanaflow/
+data/ahanaflow/**
+**/records.jsonl.gz
+data/memory/
+data/memory/**
+**/embeddings.json.gz

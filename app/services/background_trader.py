@@ -38,7 +38,7 @@ class BackgroundTraderService:
     - Learns from past trades
     """
     
-    def __init__(self, autonomous_trader, oauth_service, pricing_service, trader_tools, watchlist=None, funding_service=None, use_sandbox: bool = False, update_callback=None):
+    def __init__(self, autonomous_trader, oauth_service, pricing_service, trader_tools, watchlist=None, funding_service=None, use_sandbox: bool = True, update_callback=None):
         """
         Initialize background trader
         

@@ -24,21 +24,33 @@ class ETradeService:
     """
 
     def __init__(self, access_token: str = None, access_token_secret: str = None):
+        try:
+            from .etrade_config import load_etrade_env, load_credentials, is_sandbox
+        except ImportError:
+            from app.services.etrade_config import load_etrade_env, load_credentials, is_sandbox
+        load_etrade_env()
         self.credentials_file = os.getenv(
             'ETRADE_CREDENTIALS_FILE',
             '/app/config/etrade-credentials.json'
         )
-        self.access_token = access_token or os.getenv('ETRADE_ACCESS_TOKEN')
-        self.access_token_secret = access_token_secret or os.getenv('ETRADE_ACCESS_TOKEN_SECRET')
-        
+        creds = load_credentials(load_files=False)
+        self.access_token = access_token or creds.access_token or os.getenv('ETRADE_ACCESS_TOKEN')
+        self.access_token_secret = access_token_secret or creds.access_token_secret or os.getenv('ETRADE_ACCESS_TOKEN_SECRET')
+        self.use_sandbox = is_sandbox()
         self.credentials = self._load_credentials()
+        if creds.consumer_key:
+            self.credentials.setdefault('etrade', {}).setdefault('oauth', {})
+            self.credentials['etrade']['oauth']['consumer_key'] = creds.consumer_key
+            self.credentials['etrade']['oauth']['consumer_secret'] = creds.consumer_secret
+            self.credentials['etrade']['oauth']['sandbox_mode'] = self.use_sandbox
         self.client = None
+        self.broker = None
         self.is_authenticated = False
 
         if self.access_token and self.access_token_secret:
             self._initialize_client()
         else:
-            logger.warning("⚠️  E*TRADE tokens not found - using paper trading mode")
+            logger.warning("E*TRADE tokens not found - authenticate via OAuth before live/sandbox trading")
 
     def _load_credentials(self) -> dict:
         """Load E*TRADE credentials from JSON file"""
@@ -55,23 +67,29 @@ class ETradeService:
             return {}
 
     def _initialize_client(self):
-        """Initialize authenticated E*TRADE client"""
-        if not ETradeClient:
-            logger.error("pyetrade not installed")
-            return
-
+        """Initialize authenticated E*TRADE client via the existing broker path."""
         try:
-            self.client = ETradeClient(
-                client_key=self.credentials['etrade']['oauth']['consumer_key'],
-                client_secret=self.credentials['etrade']['oauth']['consumer_secret'],
-                resource_owner_key=self.access_token,
-                resource_owner_secret=self.access_token_secret,
-                sandbox=True
-            )
-            self.is_authenticated = True
-            logger.info("✅ E*TRADE client authenticated successfully")
+            from .broker import ETradeBroker
+        except ImportError:
+            from app.services.broker import ETradeBroker
+        try:
+            self.broker = ETradeBroker(use_sandbox=self.use_sandbox)
+            self.broker.access_token = self.access_token
+            self.broker.access_token_secret = self.access_token_secret
+            oauth = (self.credentials or {}).get('etrade', {}).get('oauth', {})
+            if oauth.get('consumer_key'):
+                self.broker.consumer_key = oauth['consumer_key']
+            if oauth.get('consumer_secret'):
+                self.broker.consumer_secret = oauth['consumer_secret']
+            if self.broker.connect():
+                self.client = self.broker.client
+                self.is_authenticated = True
+                env = "Sandbox" if self.use_sandbox else "Production"
+                logger.info("E*TRADE client authenticated (%s)", env)
+            else:
+                self.is_authenticated = False
         except Exception as e:
-            logger.error(f"❌ Failed to initialize E*TRADE client: {e}")
+            logger.error("Failed to initialize E*TRADE client: %s", e)
             self.is_authenticated = False
 
     def get_quote(self, symbol: str) -> Optional[Dict]:
@@ -247,69 +265,81 @@ class ETradeService:
         symbol: str,
         quantity: int,
         side: str,
-        order_type: str = 'Market',
+        order_type: str = 'Limit',
         price: Optional[float] = None,
-        preview: bool = True
+        preview: bool = True,
+        preview_id: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+        confirm_live: bool = False,
     ) -> Optional[Dict]:
-        """
-        Place a buy/sell order
-        
-        Args:
-            account_id: E*TRADE account ID
-            symbol: Stock ticker symbol
-            quantity: Number of shares
-            side: 'Buy' or 'Sell'
-            order_type: 'Market', 'Limit', or 'Stop'
-            price: Limit/stop price (required for non-market orders)
-            preview: If True, preview order without placing
-            
-        Returns:
-            Order confirmation or None on failure
-        """
-        if not self.is_authenticated:
-            logger.error("❌ Not authenticated - cannot place order")
+        """Preview or place via ETradeBroker. Live never one-shots preview+place."""
+        if not self.is_authenticated or not self.broker:
+            logger.error("Not authenticated - cannot place order")
             return None
 
-        if side not in ['Buy', 'Sell']:
-            logger.error(f"❌ Invalid side: {side}")
+        raw_side = (side or "").strip().upper().replace(" ", "_")
+        side_map = {
+            "BUY": "Buy",
+            "SELL": "Sell",
+            "SELL_SHORT": "SELL_SHORT",
+            "SHORT": "SELL_SHORT",
+            "SHORT_SELL": "SELL_SHORT",
+            "BUY_TO_COVER": "BUY_TO_COVER",
+            "COVER": "BUY_TO_COVER",
+        }
+        if raw_side not in side_map:
+            logger.error("Invalid side: %s", side)
             return None
+        side_norm = side_map[raw_side]
 
-        if order_type in ['Limit', 'Stop'] and not price:
-            logger.error(f"❌ Price required for {order_type} orders")
+        if (order_type or "").lower() in ('limit', 'stop', 'stop_limit') and not price:
+            logger.error("Price required for %s orders", order_type)
             return None
 
         try:
-            logger.info(f"📋 {'Previewing' if preview else 'Placing'} order: {side} {quantity} {symbol} @ ${price if price else 'Market'}")
-
-            order_response = self.client.place_order(
-                account_id=account_id,
+            kwargs = dict(
                 symbol=symbol,
-                quantity=quantity,
-                order_type=side,  # E*TRADE uses 'Buy'/'Sell' not 'BUY'/'SELL'
-                order_side=order_type,  # Market, Limit, Stop
-                limit_price=price if order_type == 'Limit' else None,
-                stop_price=price if order_type == 'Stop' else None,
-                preview=preview
+                qty=int(quantity),
+                side=side_norm,
+                order_type=(order_type or "limit").lower(),
+                limit_price=price if (order_type or "").lower() in ("limit", "stop_limit") else None,
+                stop_price=price if (order_type or "").lower() in ("stop", "stop_limit") else None,
+                account_id=account_id,
+                client_order_id=client_order_id,
             )
-
             if preview:
-                logger.info(f"✅ Order preview successful")
+                logger.info("Previewing order: %s %s %s", side_norm, quantity, symbol)
+                result = self.broker.preview_order(**kwargs)
+                if result.get("status") == "ERROR":
+                    logger.error("Preview failed: %s", result.get("message"))
+                    return result
                 return {
-                    'status': 'preview',
-                    'message': 'Order preview successful - ready to place',
-                    'order_data': order_response
-                }
-            else:
-                logger.info(f"✅ Order placed: {symbol} {quantity} @ ${price if price else 'Market'}")
-                return {
-                    'status': 'placed',
-                    'message': f'Order placed successfully',
-                    'order_data': order_response
+                    "status": "preview",
+                    "message": "Order preview successful - ready to place",
+                    "preview_id": result.get("preview_id"),
+                    "client_order_id": result.get("client_order_id"),
+                    "order_data": result,
                 }
 
+            logger.info("Placing previously previewed order: %s %s %s", side_norm, quantity, symbol)
+            result = self.broker.place_order(
+                **kwargs,
+                preview_id=preview_id,
+                confirm_live=confirm_live,
+            )
+            try:
+                from .ahana_memory import get_ahana_memory
+                get_ahana_memory().ingest({
+                    "kind": "fill" if (result or {}).get("status") == "PLACED" else "alert",
+                    "symbol": symbol,
+                    "payload": {"preview_id": preview_id, "result": result, "side": side_norm, "qty": quantity},
+                })
+            except Exception:
+                logger.debug("fill ingest skipped", exc_info=False)
+            return result
         except Exception as e:
-            logger.error(f"❌ Failed to place order: {e}")
-            return None
+            logger.error("Failed to place order: %s", e)
+            return {"status": "ERROR", "message": str(e)}
 
     def cancel_order(self, account_id: str, order_id: str) -> bool:
         """
@@ -377,9 +407,12 @@ class ETradeService:
 
     def get_status(self) -> Dict:
         """Get E*TRADE connection status"""
+        env = 'Sandbox' if self.use_sandbox else 'Production'
         return {
             'is_authenticated': self.is_authenticated,
-            'environment': 'Sandbox',
-            'status': '✅ Connected' if self.is_authenticated else '❌ Disconnected',
-            'has_tokens': bool(self.access_token and self.access_token_secret)
+            'environment': env,
+            'sandbox': self.use_sandbox,
+            'status': f'Connected ({env})' if self.is_authenticated else 'Disconnected',
+            'has_tokens': bool(self.access_token and self.access_token_secret),
+            'pdt_enforced': False,
         }

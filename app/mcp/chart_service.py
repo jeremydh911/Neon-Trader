@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from datetime import datetime, timedelta
 import random
 
-app = FastAPI(title="Neon Trader Chart Service")
+app = FastAPI(title="AhanaTrade Chart Service")
 
 
 @app.get("/chart/{symbol}")

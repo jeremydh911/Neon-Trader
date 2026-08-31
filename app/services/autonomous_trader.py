@@ -215,7 +215,45 @@ class AutonomousTrader:
             logger.warning(f"⚠️ consult_council error: {e}")
             return {"approval_percentage": 0.0, "final_confidence": 0.0, "approved": False}
 
-    def execute_order(self, symbol: str, action: str, qty: int, price: float = None, price_type: str = "MARKET", account_id: str | None = None) -> dict:
+
+    def _preview_then_place(
+        self,
+        symbol: str,
+        qty: int,
+        side: str,
+        order_type: str = "limit",
+        limit_price: float = None,
+        stop_price: float = None,
+        estimated_price: float = None,
+        confirm_live: bool = False,
+    ) -> dict:
+        """Preview then place on ETradeBroker. Mock brokers without preview still one-shot."""
+        order_type = "limit"
+        kwargs = dict(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            order_type=order_type,
+            limit_price=limit_price,
+            stop_price=stop_price,
+        )
+        if estimated_price is not None:
+            kwargs["estimated_price"] = estimated_price
+        if hasattr(self.broker, "preview_order"):
+            preview = self.broker.preview_order(**kwargs)
+            if not preview or preview.get("status") in ("ERROR", "error", "FAILED"):
+                return preview or {"status": "ERROR", "message": "preview failed"}
+            preview_id = preview.get("preview_id")
+            client_order_id = preview.get("client_order_id")
+            return self.broker.place_order(
+                **kwargs,
+                preview_id=preview_id,
+                client_order_id=client_order_id,
+                confirm_live=confirm_live,
+            )
+        return self.broker.place_order(**kwargs)
+
+    def execute_order(self, symbol: str, action: str, qty: int, price: float = None, price_type: str = "LIMIT", account_id: str | None = None) -> dict:
         """Execute an order via the configured broker. Returns an order result dict."""
         try:
             side = 'buy' if action.upper() in ('BUY', 'OPEN') else 'sell'
@@ -223,8 +261,16 @@ class AutonomousTrader:
                 logger.warning("⚠️ No broker configured - cannot execute order")
                 return {"status": "FAILED", "reason": "no_broker"}
 
-            # Broker API: place_order(symbol, qty, side, order_type)
-            result = self.broker.place_order(symbol=symbol, qty=qty, side=side, order_type=(price_type or "market"))
+            order_type = (price_type or "limit").lower()
+            result = self._preview_then_place(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                order_type=order_type,
+                limit_price=price if order_type in ("limit", "stop_limit") else None,
+                stop_price=price if order_type in ("stop", "stop_limit") else None,
+                estimated_price=price,
+            )
             if result and isinstance(result, dict):
                 # Normalize success response
                 if result.get('status') in ('filled', 'filled_partial', 'success', 'SUCCESS') or result.get('status') == 'FILLED':
@@ -550,7 +596,7 @@ class AutonomousTrader:
     # BROKER TRADING TOOLS - Full Access to Execute Trades
     # ============================================================================
     
-    def execute_trade(self, symbol: str, qty: int, side: str, order_type: str = "market", 
+    def execute_trade(self, symbol: str, qty: int, side: str, order_type: str = "limit", 
                      limit_price: float = None, stop_price: float = None) -> Dict[str, Any]:
         """
         Execute a trade directly on the broker
@@ -585,14 +631,13 @@ class AutonomousTrader:
         try:
             logger.info(f"📤 Executing {side} order for {qty} {symbol} @ {order_type}")
             
-            # Place order on broker
-            result = self.broker.place_order(
+            result = self._preview_then_place(
                 symbol=symbol,
                 qty=qty,
                 side=side,
                 order_type=order_type,
                 limit_price=limit_price,
-                stop_price=stop_price
+                stop_price=stop_price,
             )
             
             if result.get('status') == 'ERROR' or result.get('status') == 'error':

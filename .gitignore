@@ -56,3 +56,9 @@ app/.streamlit/
 
 # Portainer
 .portainer_token
+
+# OAuth JSON token store (never commit)
+etrade_oauth_request.json
+etrade_oauth_tokens.json
+**/etrade_oauth_request.json
+**/etrade_oauth_tokens.json

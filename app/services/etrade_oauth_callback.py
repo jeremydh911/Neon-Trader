@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP handler for OAuth callback"""
     
-    # Class variable to store the verification code
+    # Class variables (must set on the class, not self — handler is per-request)
     verification_code: Optional[str] = None
+    oauth_token: Optional[str] = None
     callback_received = threading.Event()
     
     def do_GET(self):
@@ -31,10 +32,12 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         
         logger.info(f"OAuth callback received: {self.path}")
         
-        # Extract verification code
+        # Extract verification code (and request token if E*TRADE sent it)
         if 'oauth_verifier' in query_params:
-            self.verification_code = query_params['oauth_verifier'][0]
-            logger.info(f"✅ Verification code received: {self.verification_code}")
+            OAuthCallbackHandler.verification_code = query_params['oauth_verifier'][0]
+            token_vals = query_params.get('oauth_token') or []
+            OAuthCallbackHandler.oauth_token = token_vals[0] if token_vals else None
+            logger.info("Verification code received")
             
             # Send success response
             self.send_response(200)
@@ -191,6 +194,7 @@ class OAuthCallbackServer:
         self.server: Optional[HTTPServer] = None
         self.thread: Optional[threading.Thread] = None
         self.verification_code: Optional[str] = None
+        self.oauth_token: Optional[str] = None
         
         logger.info(f"OAuth Callback Server initialized: {self.get_callback_url()}")
     
@@ -244,12 +248,16 @@ class OAuthCallbackServer:
             return None
         
         verification_code = OAuthCallbackHandler.verification_code
-        logger.info(f"✅ Verification code captured: {verification_code}")
-        
+        oauth_token = OAuthCallbackHandler.oauth_token
+        logger.info("Verification code captured")
+        self.verification_code = verification_code
+        self.oauth_token = oauth_token
+
         # Reset for next callback
         OAuthCallbackHandler.callback_received.clear()
         OAuthCallbackHandler.verification_code = None
-        
+        OAuthCallbackHandler.oauth_token = None
+
         return verification_code
 
 
@@ -324,10 +332,13 @@ class ETradeOAuthCallbackFlow:
             self.callback_server.stop()
             return False
         
-        # Complete OAuth flow with verification code
+        # Complete via reconstructed session from JSON request-token material
         try:
-            result = self.oauth_service.complete_oauth_flow(verification_code)
-            logger.info(f"OAuth flow completed: {result}")
+            result = self.oauth_service.complete_oauth_flow(
+                verification_code,
+                request_token=self.callback_server.oauth_token,
+            )
+            logger.info("OAuth flow completed")
             return result
         
         finally:

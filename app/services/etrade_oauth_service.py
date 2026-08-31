@@ -1,331 +1,361 @@
-"""
-E*TRADE OAuth Service with resilience and retry logic
-Handles authentication flow with exponential backoff for transient failures
+"""E*TRADE OAuth 1.0a (OOB) using JSON request-token state.
+
+pyetrade.ETradeOAuth.get_access_token does:
+    self.session._client.client.verifier = verifier
+After pickle/reload, OAuth1Session has no _client (AttributeError).
+This service never pickles the live session. Request-token material is JSON:
+resource_owner_key, resource_owner_secret, authorize_url, sandbox.
+Verifier exchange reconstructs OAuth1Session and POSTs the sandbox or
+production access_token URL (production only when ETRADE_ENV=production).
 """
 
-import os
-import sys
-import json
+from __future__ import annotations
+
 import logging
-import pickle
-from datetime import datetime, timedelta
-from pathlib import Path
+import os
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-# Force fresh import of pyetrade (fixes Streamlit caching)
-if 'pyetrade' in sys.modules:
-    del sys.modules['pyetrade']
-if 'pyetrade.authorization' in sys.modules:
-    del sys.modules['pyetrade.authorization']
+try:
+    from requests_oauthlib import OAuth1Session
+except ImportError:  # pragma: no cover
+    OAuth1Session = None  # type: ignore
 
 try:
     from pyetrade import ETradeOAuth
-    logger = logging.getLogger(__name__)
-    logger.info("✅ pyetrade imported successfully")
-except ImportError as e:
-    logger = logging.getLogger(__name__)
-    logger.error(f"❌ Failed to import pyetrade: {e}")
-    ETradeOAuth = None
+except ImportError:  # pragma: no cover
+    ETradeOAuth = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+
+def _config():
+    try:
+        from .etrade_config import etrade_hosts, is_sandbox, load_credentials, load_etrade_env
+    except ImportError:  # pragma: no cover
+        from app.services.etrade_config import etrade_hosts, is_sandbox, load_credentials, load_etrade_env
+    return etrade_hosts, is_sandbox, load_credentials, load_etrade_env
+
+
+def _store():
+    try:
+        from .etrade_oauth_store import (
+            access_token_store_path,
+            clear_request_token_material,
+            load_access_token_material,
+            load_request_token_material,
+            request_token_store_path,
+            save_access_token_material,
+            save_request_token_material,
+        )
+    except ImportError:  # pragma: no cover
+        from app.services.etrade_oauth_store import (
+            access_token_store_path,
+            clear_request_token_material,
+            load_access_token_material,
+            load_request_token_material,
+            request_token_store_path,
+            save_access_token_material,
+            save_request_token_material,
+        )
+    return (
+        access_token_store_path,
+        clear_request_token_material,
+        load_access_token_material,
+        load_request_token_material,
+        request_token_store_path,
+        save_access_token_material,
+        save_request_token_material,
+    )
+
+
+def reconstruct_oauth1_session(
+    consumer_key: str,
+    consumer_secret: str,
+    resource_owner_key: str,
+    resource_owner_secret: str,
+    verifier: str,
+) -> "OAuth1Session":
+    """Build a fresh OAuth1Session for access-token exchange. Never reuse a pickled session."""
+    if OAuth1Session is None:
+        raise RuntimeError("requests_oauthlib is required for E*TRADE OAuth")
+    return OAuth1Session(
+        consumer_key,
+        client_secret=consumer_secret,
+        resource_owner_key=resource_owner_key,
+        resource_owner_secret=resource_owner_secret,
+        verifier=verifier,
+        signature_type="AUTH_HEADER",
+    )
+
+
+def access_token_url_for_sandbox(sandbox: bool) -> str:
+    etrade_hosts, _, _, _ = _config()
+    return etrade_hosts(sandbox=sandbox)["access_token_url"]
 
 
 class ETradeOAuthService:
-    """
-    E*TRADE OAuth Service with resilience and retry logic
-    Handles authentication flow with exponential backoff for transient failures
-    """
+    """OAuth 1.0a OOB flow. JSON request-token store is the source of truth."""
 
     def __init__(self, credentials_file: str = None):
-        # Try multiple possible locations for credentials file
-        self.credentials_file = credentials_file or os.getenv('ETRADE_CREDENTIALS_FILE')
-        
+        etrade_hosts, is_sandbox, load_credentials, load_etrade_env = _config()
+        (
+            access_token_store_path,
+            _,
+            _,
+            _,
+            request_token_store_path,
+            _,
+            _,
+        ) = _store()
+        load_etrade_env()
+        self.credentials_file = credentials_file or os.getenv("ETRADE_CREDENTIALS_FILE")
         if not self.credentials_file:
-            # Try multiple standard locations
             possible_paths = [
-                '/app/config/etrade-credentials.json',  # Docker container
-                os.path.join(os.path.dirname(__file__), '..', 'config', 'etrade-credentials.json'),  # Relative to this file
-                os.path.join(os.getcwd(), 'app', 'config', 'etrade-credentials.json'),  # From project root
-                os.path.expanduser('~/Desktop/neon-trader-gpu/app/config/etrade-credentials.json'),  # Expanded home
+                "/app/config/etrade-credentials.json",
+                os.path.join(os.path.dirname(__file__), "..", "config", "etrade-credentials.json"),
+                os.path.join(os.getcwd(), "app", "config", "etrade-credentials.json"),
             ]
-            
             for path in possible_paths:
                 if os.path.exists(path):
                     self.credentials_file = path
-                    logger.info(f"Found credentials file at: {self.credentials_file}")
                     break
-            
             if not self.credentials_file:
-                self.credentials_file = '/app/config/etrade-credentials.json'  # Default fallback
-        
-        self.tokens_file = '/app/config/.etrade_tokens'
-        try:
-            from .etrade_config import load_etrade_env, load_credentials, is_sandbox, etrade_hosts
-        except ImportError:
-            from app.services.etrade_config import load_etrade_env, load_credentials, is_sandbox, etrade_hosts
-        load_etrade_env()
+                self.credentials_file = "/app/config/etrade-credentials.json"
+
+        self.tokens_file = str(access_token_store_path())
+        self.request_token_file = str(request_token_store_path())
         self.credentials = self._load_credentials()
 
-        # Env / gitignored file wins. Default SANDBOX (apisb.etrade.com).
         creds = load_credentials(load_files=False)
-        if 'etrade' not in self.credentials:
-            self.credentials['etrade'] = {}
-        if 'oauth' not in self.credentials['etrade']:
-            self.credentials['etrade']['oauth'] = {}
-        if 'api' not in self.credentials['etrade']:
-            self.credentials['etrade']['api'] = {}
+        if "etrade" not in self.credentials:
+            self.credentials["etrade"] = {}
+        if "oauth" not in self.credentials["etrade"]:
+            self.credentials["etrade"]["oauth"] = {}
+        if "api" not in self.credentials["etrade"]:
+            self.credentials["etrade"]["api"] = {}
         if creds.consumer_key:
-            self.credentials['etrade']['oauth']['consumer_key'] = creds.consumer_key
+            self.credentials["etrade"]["oauth"]["consumer_key"] = creds.consumer_key
         if creds.consumer_secret:
-            self.credentials['etrade']['oauth']['consumer_secret'] = creds.consumer_secret
+            self.credentials["etrade"]["oauth"]["consumer_secret"] = creds.consumer_secret
         sandbox_mode = is_sandbox()
-        self.credentials['etrade']['oauth']['sandbox_mode'] = sandbox_mode
+        self.credentials["etrade"]["oauth"]["sandbox_mode"] = sandbox_mode
         hosts = etrade_hosts(sandbox=sandbox_mode)
-        env_base_url = os.getenv('ETRADE_BASE_URL')
-        self.credentials['etrade']['api']['base_url'] = env_base_url or hosts['host']
-        self.credentials['etrade']['oauth'].setdefault('request_token_url', hosts['request_token_url'])
-        self.credentials['etrade']['oauth'].setdefault('access_token_url', hosts['access_token_url'])
-        self.credentials['etrade']['oauth'].setdefault('authorize_url', hosts['authorize_url'])
+        env_base_url = os.getenv("ETRADE_BASE_URL")
+        self.credentials["etrade"]["api"]["base_url"] = env_base_url or hosts["host"]
+        self.credentials["etrade"]["oauth"]["request_token_url"] = hosts["request_token_url"]
+        self.credentials["etrade"]["oauth"]["access_token_url"] = hosts["access_token_url"]
+        self.credentials["etrade"]["oauth"]["authorize_url"] = hosts["authorize_url"]
+
+        # Live OAuth1Session is never the source of truth.
         self.oauth = None
+        self.session = None
         self.client = None
         self.is_authenticated = False
         self.last_auth_time = None
         self.token_expiry = None
         self.request_token = None
-
-        logger.info("✅ ETradeOAuthService initialized")
+        logger.info("ETradeOAuthService initialized (JSON request-token store)")
 
     def _load_credentials(self) -> dict:
-        """Load E*TRADE credentials from JSON file"""
+        import json
+
         try:
-            with open(self.credentials_file, 'r') as f:
-                creds = json.load(f)
-            logger.info(f"✅ Credentials loaded from {self.credentials_file}")
-            return creds
+            with open(self.credentials_file, "r", encoding="utf-8") as handle:
+                return json.load(handle)
         except FileNotFoundError:
-            logger.error(f"❌ Credentials file not found: {self.credentials_file}")
             return {}
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Invalid JSON in credentials file: {e}")
+        except json.JSONDecodeError as exc:
+            logger.error("Invalid JSON in credentials file: %s", type(exc).__name__)
             return {}
+
+    def _consumer(self):
+        oauth_block = (self.credentials or {}).get("etrade", {}).get("oauth", {})
+        key = oauth_block.get("consumer_key")
+        secret = oauth_block.get("consumer_secret")
+        if not key or not secret:
+            raise Exception(
+                "E*TRADE consumer key/secret missing (set ETRADE_CONSUMER_KEY / ETRADE_CONSUMER_SECRET)"
+            )
+        return key, secret
+
+    def _sandbox_and_hosts(self, sandbox: Optional[bool] = None):
+        etrade_hosts, is_sandbox, _, _ = _config()
+        if sandbox is None:
+            sandbox = is_sandbox()
+        return bool(sandbox), etrade_hosts(sandbox=bool(sandbox))
 
     def initiate_oauth_flow(self) -> str:
-        """
-        Initiate OAuth flow with retry logic for transient failures
-        Returns authorization URL for user to visit, or raises exception on error
-        """
-        import sys
-        logger.info(f"DEBUG: Python version: {sys.version}")
-        logger.info(f"DEBUG: Python executable: {sys.executable}")
-        logger.info(f"DEBUG: Module name: {__name__}")
-        logger.info(f"DEBUG: ETradeOAuth = {ETradeOAuth}")
-        logger.info(f"DEBUG: ETradeOAuth type = {type(ETradeOAuth)}")
-        logger.info(f"DEBUG: ETradeOAuth is None = {ETradeOAuth is None}")
-        logger.info(f"DEBUG: not ETradeOAuth = {not ETradeOAuth}")
-        
-        if not ETradeOAuth:
-            logger.error('❌ pyetrade not installed - ETradeOAuth is None or falsy')
-            # Double-check by trying to import directly
+        """Fetch a request token, persist JSON material, return the authorize URL."""
+        if OAuth1Session is None:
+            raise Exception("requests_oauthlib not installed")
+        consumer_key, consumer_secret = self._consumer()
+        sandbox, hosts = self._sandbox_and_hosts()
+        (
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            save_request_token_material,
+        ) = _store()
+
+        last_error = None
+        retry_delay = 2
+        for attempt in range(3):
+            session = None
             try:
-                from pyetrade import ETradeOAuth as DirectImport
-                logger.error(f"  (But direct import works: {DirectImport})")
-            except Exception as e:
-                logger.error(f"  (Direct import also failed: {e})")
-            raise Exception('pyetrade not installed. Install with: pip install pyetrade')
-
-        oauth_block = (self.credentials or {}).get('etrade', {}).get('oauth', {})
-        if not oauth_block.get('consumer_key') or not oauth_block.get('consumer_secret'):
-            logger.error('Credentials not loaded')
-            raise Exception('E*TRADE consumer key/secret missing (set ETRADE_CONSUMER_KEY / ETRADE_CONSUMER_SECRET)')
-
-        max_retries = 3
-        retry_delay = 2  # seconds
-
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Initiating OAuth flow (attempt {attempt + 1}/{max_retries})")
-
-                self.oauth = ETradeOAuth(
-                    consumer_key=self.credentials['etrade']['oauth']['consumer_key'],
-                    consumer_secret=self.credentials['etrade']['oauth']['consumer_secret'],
-                    callback_url='oob'  # Out of Band - user enters verification code manually
+                logger.info("Initiating OAuth flow (attempt %s/3) sandbox=%s", attempt + 1, sandbox)
+                session = OAuth1Session(
+                    consumer_key,
+                    client_secret=consumer_secret,
+                    callback_uri="oob",
+                    signature_type="AUTH_HEADER",
                 )
-
-                # Determine sandbox / production endpoints
-                oauth_cfg = self.credentials.get('etrade', {}).get('oauth', {})
-                api_cfg = self.credentials.get('etrade', {}).get('api', {})
+                token = session.fetch_request_token(hosts["request_token_url"])
+                resource_owner_key = token["oauth_token"]
+                resource_owner_secret = token["oauth_token_secret"]
+                authorize_url = "%s?key=%s&token=%s" % (
+                    hosts["authorize_url"],
+                    consumer_key,
+                    resource_owner_key,
+                )
+                save_request_token_material(
+                    {
+                        "resource_owner_key": resource_owner_key,
+                        "resource_owner_secret": resource_owner_secret,
+                        "authorize_url": authorize_url,
+                        "sandbox": sandbox,
+                    }
+                )
+                self.request_token = resource_owner_key
+                # Drop the live session so pickle/reload cannot become source of truth.
                 try:
-                    from .etrade_config import is_sandbox, etrade_hosts
-                except ImportError:
-                    from app.services.etrade_config import is_sandbox, etrade_hosts
-                sandbox_mode = oauth_cfg.get('sandbox_mode', is_sandbox())
-                env_sandbox = os.getenv('ETRADE_SANDBOX')
-                if os.getenv('ETRADE_ENV') or env_sandbox is not None:
-                    sandbox_mode = is_sandbox()
-
-                # Base URL override
-                base_url = api_cfg.get('base_url')
-                request_token_url = oauth_cfg.get('request_token_url')
-                access_token_url = oauth_cfg.get('access_token_url')
-                authorize_url = oauth_cfg.get('authorize_url')
-
-                if base_url and not request_token_url:
-                    request_token_url = base_url.rstrip('/') + '/oauth/request_token'
-                    access_token_url = base_url.rstrip('/') + '/oauth/access_token'
-
-                if not request_token_url:
-                    if sandbox_mode:
-                        request_token_url = 'https://apisb.etrade.com/oauth/request_token'
-                        access_token_url = 'https://apisb.etrade.com/oauth/access_token'
-                    else:
-                        request_token_url = 'https://api.etrade.com/oauth/request_token'
-                        access_token_url = 'https://api.etrade.com/oauth/access_token'
-
-                if not authorize_url:
-                    authorize_url = 'https://us.etrade.com/e/t/etws/authorize'
-
-                # set attributes on oauth instance if supported by library
-                try:
-                    self.oauth.req_token_url = request_token_url
-                    self.oauth.access_token_url = access_token_url
-                    self.oauth.authorize_url = authorize_url
+                    session.close()
                 except Exception:
                     pass
-
-                # Get request token
-                request_token = self.oauth.get_request_token()
-                logger.info("✅ Request token obtained")
-                # pyetrade may return a full URL; prefer the raw token value if available
-                token_value = getattr(self.oauth, 'resource_owner_key', None) or getattr(self.oauth, 'oauth_token', None) or request_token
-
-                # Generate authorization URL
-                auth_url = self.oauth.auth_token_url
-                # Guard: if the library incorrectly returns the request_token endpoint
-                # (e.g., when misconfigured), compute a correct user-facing authorize URL
-                # using the request_token and the consumer key.
-                if auth_url and ('/oauth/request_token' in auth_url or '/oauth/access_token' in auth_url or 'token=' not in auth_url):
+                self.session = None
+                self.oauth = None
+                logger.info("Authorization URL generated")
+                return authorize_url
+            except Exception as exc:
+                last_error = exc
+                logger.warning("OAuth initiation failed (attempt %s): %s", attempt + 1, exc)
+                if session is not None:
                     try:
-                        consumer_key = self.credentials['etrade']['oauth']['consumer_key']
-                        # Use E*TRADE's web authorization endpoint (default)
-                        # For sandbox, the web host is the same; token/key params are required
-                        web_authorize = 'https://us.etrade.com/e/t/etws/authorize'
-                        auth_url = f"{web_authorize}?key={consumer_key}&token={token_value}"
-                        logger.info(f"🔧 Rebuilt authorization URL from request token: {auth_url}")
+                        session.close()
                     except Exception:
-                        logger.warning('⚠️ Could not rebuild authorization URL; falling back to provided value')
-                logger.info(f"✅ Authorization URL generated: {auth_url}")
-
-                # Store request token for later
-                self.request_token = token_value
-                
-                return auth_url
-
-            except Exception as e:
-                logger.warning(f"⚠️  OAuth initiation failed (attempt {attempt + 1}): {e}")
-
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {retry_delay} seconds...")
-                    import time
+                        pass
+                self.session = None
+                self.oauth = None
+                if attempt < 2:
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(f"❌ OAuth initiation failed after {max_retries} attempts: {e}")
-                    raise Exception(f'Failed to initiate OAuth flow: {str(e)}')
+                    retry_delay *= 2
+        raise Exception("Failed to initiate OAuth flow: %s" % last_error)
 
-        raise Exception('Max retries exceeded for OAuth flow initiation')
+    def complete_oauth_flow(self, verification_code: str, request_token: Optional[str] = None) -> bool:
+        """Exchange verifier using reconstructed OAuth1Session from JSON material."""
+        (
+            _,
+            clear_request_token_material,
+            _,
+            load_request_token_material,
+            _,
+            save_access_token_material,
+            _,
+        ) = _store()
+        material = load_request_token_material()
+        if not material:
+            raise Exception("Please start the OAuth flow first (no saved request token)")
 
-    def complete_oauth_flow(self, verification_code: str) -> bool:
-        """
-        Complete OAuth flow with verification code
-        Exchanges code for access tokens
-        Returns True on success, raises exception on failure
-        """
-        try:
-            if not self.oauth:
-                logger.error("OAuth not initialized - call initiate_oauth_flow first")
-                raise Exception('Please start the OAuth flow first')
-
-            logger.info("Exchanging verification code for access tokens")
-
-            # Exchange verification code for access tokens
-            self.oauth.get_access_token(verification_code)
-            logger.info("✅ Access tokens obtained")
-
-            # Get tokens
-            access_token = self.oauth.access_token
-            access_token_secret = self.oauth.resource_owner_key
-
-            # Save tokens securely
-            self._save_access_tokens({
-                'access_token': access_token,
-                'access_token_secret': access_token_secret
-            })
-
-            # Update state
-            self.is_authenticated = True
-            self.last_auth_time = datetime.now()
-            self.token_expiry = datetime.now() + timedelta(hours=24)
-
-            logger.info("✅ OAuth flow completed successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to complete OAuth flow: {e}")
-            raise Exception(f'Failed to exchange verification code: {str(e)}')
-
-    def load_cached_tokens(self) -> bool:
-        """Load previously saved access tokens"""
-        try:
-            with open(self.tokens_file, 'rb') as f:
-                tokens = pickle.load(f)
-
-            if not ETradeOAuth:
-                logger.error("pyetrade not installed")
-                return False
-
-            self.oauth = ETradeOAuth(
-                consumer_key=self.credentials['etrade']['oauth']['consumer_key'],
-                consumer_secret=self.credentials['etrade']['oauth']['consumer_secret'],
-                callback_url='oob'
+        saved_key = material.get("resource_owner_key")
+        if request_token and saved_key and request_token != saved_key:
+            raise Exception(
+                "Verifier belongs to a different request token than the one saved. "
+                "Start a new OAuth flow and authorize the latest URL."
             )
 
-            # Manually set tokens
-            self.oauth.access_token = tokens['access_token']
-            self.oauth.resource_owner_key = tokens['access_token_secret']
+        verifier = (verification_code or "").strip()
+        if not verifier:
+            raise Exception("Verification code is required")
 
-            self.is_authenticated = True
-            self.last_auth_time = tokens.get('saved_time')
-            logger.info("✅ Cached tokens loaded successfully")
-            return True
+        consumer_key, consumer_secret = self._consumer()
+        saved_sandbox = bool(material.get("sandbox", True))
+        _, hosts = self._sandbox_and_hosts(sandbox=saved_sandbox)
+        token_url = hosts["access_token_url"]
 
-        except FileNotFoundError:
-            logger.info("No cached tokens found")
-            return False
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to load cached tokens: {e}")
-            return False
-
-    def _save_access_tokens(self, tokens: dict):
-        """Save access tokens securely"""
+        # Reconstruct — do not touch any pickled session._client.
+        session = reconstruct_oauth1_session(
+            consumer_key,
+            consumer_secret,
+            material["resource_owner_key"],
+            material["resource_owner_secret"],
+            verifier,
+        )
         try:
-            os.makedirs(os.path.dirname(self.tokens_file), exist_ok=True)
-            tokens['saved_time'] = datetime.now().isoformat()
+            logger.info("Exchanging verification code for access tokens at %s", token_url)
+            tokens = session.fetch_access_token(token_url)
+        except AttributeError as exc:
+            raise Exception(
+                "OAuth session was not reconstructed (pickle _client bug). Re-initiate OAuth."
+            ) from exc
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+            self.session = None
+            self.oauth = None
 
-            with open(self.tokens_file, 'wb') as f:
-                pickle.dump(tokens, f)
+        access_token = tokens.get("oauth_token") if isinstance(tokens, dict) else None
+        access_token_secret = tokens.get("oauth_token_secret") if isinstance(tokens, dict) else None
+        if not access_token or not access_token_secret:
+            raise Exception("Access token response missing oauth_token fields")
 
-            # Set restrictive permissions
-            os.chmod(self.tokens_file, 0o600)
-            logger.info(f"✅ Access tokens saved securely to {self.tokens_file}")
-        except Exception as e:
-            logger.error(f"❌ Failed to save access tokens: {e}")
+        save_access_token_material(access_token, access_token_secret)
+        os.environ["ETRADE_ACCESS_TOKEN"] = access_token
+        os.environ["ETRADE_ACCESS_TOKEN_SECRET"] = access_token_secret
+        clear_request_token_material()
+
+        self.is_authenticated = True
+        self.last_auth_time = datetime.now(timezone.utc)
+        self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=24)
+        self.request_token = None
+        logger.info("OAuth flow completed successfully")
+        return True
+
+    def load_cached_tokens(self) -> bool:
+        (
+            _,
+            _,
+            load_access_token_material,
+            _,
+            _,
+            _,
+            _,
+        ) = _store()
+        tokens = load_access_token_material()
+        if not tokens:
+            logger.info("No cached access tokens found")
+            return False
+        os.environ["ETRADE_ACCESS_TOKEN"] = tokens["access_token"]
+        os.environ["ETRADE_ACCESS_TOKEN_SECRET"] = tokens["access_token_secret"]
+        self.is_authenticated = True
+        saved = tokens.get("saved_time")
+        self.last_auth_time = saved
+        logger.info("Cached access tokens loaded")
+        return True
 
     def get_status(self) -> dict:
-        """Get current authentication status"""
         needs_refresh = False
         if self.token_expiry:
-            needs_refresh = datetime.now() > self.token_expiry
-        
+            needs_refresh = datetime.now(timezone.utc) > self.token_expiry
         return {
-            'is_authenticated': self.is_authenticated,
-            'auth_time': self.last_auth_time.isoformat() if self.last_auth_time else None,
-            'expiry_time': self.token_expiry.isoformat() if self.token_expiry else None,
-            'needs_refresh': needs_refresh
+            "is_authenticated": self.is_authenticated,
+            "auth_time": self.last_auth_time.isoformat() if hasattr(self.last_auth_time, "isoformat") else self.last_auth_time,
+            "expiry_time": self.token_expiry.isoformat() if self.token_expiry else None,
+            "needs_refresh": needs_refresh,
+            "status": "authenticated" if self.is_authenticated else "unauthenticated",
         }

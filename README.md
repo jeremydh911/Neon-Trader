@@ -154,6 +154,7 @@ day trade, the error is surfaced.
 | `ETRADE_CONSUMER_SECRET` | _(env / gitignored file)_ | OAuth consumer secret |
 | `ETRADE_ACCESS_TOKEN` | _(after OAuth)_ | Expires midnight ET / idle ~2h |
 | `ETRADE_ACCESS_TOKEN_SECRET` | _(after OAuth)_ | Pair with access token |
+| `ETRADE_OAUTH_STATE_FILE` | `~/.secrets/etrade_oauth_request.json` | JSON request-token store (mode 0600) |
 | `AHANA_BRAIN_URL` | _(unset)_ | Plug-in brain; council used if empty |
 | `AHANA_BRAIN_TOKEN` | _(unset)_ | Optional bearer auth for the brain |
 | `AHANAFLOW_URL` | _(unset)_ | Enable AhanaFlow adapter if the package is installed |

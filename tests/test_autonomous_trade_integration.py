@@ -64,6 +64,7 @@ def test_end_to_end_autonomous_trade(tmp_path):
     assert t['symbol'] == 'TEST'
     assert t['action'] == 'BUY'
 
-    # Verify mock broker recorded the trade
+    # Verify mock broker recorded the trade (buy + protective stop possible)
     mb_trades = mock_broker.get_trades()
-    assert len(mb_trades) == 1
+    assert len(mb_trades) >= 1
+    assert any(t.symbol == "TEST" for t in mb_trades)

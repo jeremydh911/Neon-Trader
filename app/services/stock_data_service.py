@@ -212,6 +212,16 @@ class StockDataService:
             vol_ratio = current_vol / avg_vol.iloc[-1] if avg_vol.iloc[-1] > 0 else 1
             technicals['volume_trend'] = "High" if vol_ratio > 1.5 else "Low" if vol_ratio < 0.7 else "Normal"
             technicals['volume_ratio'] = round(vol_ratio, 2)
+
+            # Approximate VWAP from typical price * volume (session proxy on available bars)
+            try:
+                typical = (high + low + close) / 3.0
+                cum_vol = volume.cumsum()
+                cum_tp_vol = (typical * volume).cumsum()
+                vwap = (cum_tp_vol / cum_vol).iloc[-1]
+                technicals['vwap'] = round(float(vwap), 2) if cum_vol.iloc[-1] > 0 else None
+            except Exception:
+                technicals['vwap'] = None
             
             # Additional signals
             # Price momentum (% change from 20-day high/low)

@@ -55,3 +55,18 @@ streamlit run app/main.py
 - Trust research without yfinance unless you install it (`pip install yfinance`) for live quotes
 
 When the paper cycle prints `PAPER CYCLE PASS`, you are clear to exercise Tim’s P0 rules in mock today.
+
+## Tim Cockpit (AI + engines)
+
+```bash
+export PAPER_MODE=1 USE_MOCK_BROKER=1 OTLP_ENABLED=false PYTHONPATH=.
+streamlit run app/main.py
+```
+
+Default home is **Tim Cockpit**:
+- Chat Tim (`analyze NVDA`, `snipe AAPL`, `show risk`)
+- Momentum gate checklist + confidence
+- **PAPER SNIPE** arms broker stop on fill
+- Persistent risk strip (capital · daily PnL · open · mode)
+
+Engines decide. AI narrates. Council stays secondary.

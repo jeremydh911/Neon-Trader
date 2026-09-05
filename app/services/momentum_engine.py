@@ -164,6 +164,57 @@ def evaluate_momentum_entry(
     return "HOLD", score * 0.5, "No snipe: " + "; ".join(reasons)
 
 
+def momentum_gate_report(
+    price: float,
+    indicators: Dict[str, Any],
+    config: Optional[MomentumConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Structured gate checklist for AI UX — same rules as evaluate_momentum_entry.
+    """
+    cfg = config or MomentumConfig()
+    action, confidence, reason = evaluate_momentum_entry(price, indicators, cfg)
+    levels = compute_stop_and_target(price, indicators, cfg) if price > 0 else {}
+
+    sma20 = _f(indicators, "sma_20", "SMA20", "sma20")
+    sma50 = _f(indicators, "sma_50", "SMA50", "sma50")
+    rsi = _f(indicators, "rsi", "rsi_14", "RSI", default=50.0)
+    macd = _f(indicators, "macd", "MACD", "macd_histogram", "macd_hist")
+    volume_ratio = _f(indicators, "volume_ratio", "rvol", "relative_volume", default=1.0)
+    momentum_pct = _f(indicators, "momentum_pct", default=50.0)
+    vwap_ok = approximate_vwap_hold(price, indicators)
+
+    gates = [
+        {"id": "vwap", "label": "Above VWAP / SMA20", "passed": vwap_ok, "value": "hold" if vwap_ok else "below"},
+        {"id": "sma20", "label": "Price > SMA20", "passed": sma20 <= 0 or price > sma20, "value": f"{price:.2f} vs {sma20:.2f}" if sma20 else "n/a"},
+        {"id": "trend", "label": "SMA20 > SMA50", "passed": not (sma20 > 0 and sma50 > 0) or sma20 > sma50, "value": f"{sma20:.2f} / {sma50:.2f}" if sma20 and sma50 else "n/a"},
+        {"id": "rvol", "label": f"RVOL ≥ {cfg.min_volume_ratio}", "passed": volume_ratio >= cfg.min_volume_ratio, "value": f"{volume_ratio:.2f}x"},
+        {"id": "mom", "label": f"Momentum ≥ {cfg.min_momentum_pct:.0f}", "passed": momentum_pct >= cfg.min_momentum_pct, "value": f"{momentum_pct:.0f}"},
+        {"id": "macd", "label": "MACD positive", "passed": macd > 0, "value": f"{macd:.4f}"},
+        {"id": "rsi", "label": f"RSI {cfg.min_rsi_for_entry:.0f}–{cfg.max_rsi_for_entry:.0f}", "passed": cfg.min_rsi_for_entry <= rsi <= cfg.max_rsi_for_entry, "value": f"{rsi:.1f}"},
+    ]
+    passed = sum(1 for g in gates if g["passed"])
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "reason": reason,
+        "gates": gates,
+        "gates_passed": passed,
+        "gates_total": len(gates),
+        "levels": levels,
+        "indicators": {
+            "price": price,
+            "sma_20": sma20,
+            "sma_50": sma50,
+            "rsi": rsi,
+            "macd": macd,
+            "volume_ratio": volume_ratio,
+            "momentum_pct": momentum_pct,
+        },
+    }
+
+
 def compute_stop_and_target(
     entry_price: float,
     indicators: Dict[str, Any],
@@ -203,6 +254,15 @@ def risk_based_shares(
     Size so $ risk ≈ risk_fraction of capital.
     Never exceed max_position_fraction of capital in notional.
     """
+    import math
+    try:
+        capital = float(capital)
+        entry_price = float(entry_price)
+        stop_price = float(stop_price)
+    except (TypeError, ValueError):
+        return 0
+    if any(math.isnan(x) or math.isinf(x) for x in (capital, entry_price, stop_price)):
+        return 0
     if capital <= 0 or entry_price <= 0 or stop_price <= 0 or stop_price >= entry_price:
         return 0
     risk_per_share = entry_price - stop_price

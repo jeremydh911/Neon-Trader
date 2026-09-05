@@ -27,41 +27,41 @@ from services.funding_service import FundingService
 
 # Page configuration
 st.set_page_config(
-    page_title="Neon Trader",
-    page_icon="🚀",
+    page_title="TIM — Neon Sniper Desk",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS — Tim desk (mint/amber on deep graphite, not purple SaaS)
 st.markdown("""
 <style>
-    .main-header {
-        text-align: center;
-        padding: 2rem 0;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border-radius: 0.5rem;
-        margin-bottom: 2rem;
-    }
-    .status-badge {
-        padding: 0.5rem 1rem;
-        border-radius: 0.25rem;
-        font-weight: bold;
-        display: inline-block;
-    }
-    .status-connected {
-        background-color: #28a745;
-        color: white;
-    }
-    .status-disconnected {
-        background-color: #dc3545;
-        color: white;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap');
+.main-header {
+    text-align: left;
+    padding: 1.5rem 1.75rem;
+    background:
+      radial-gradient(800px 240px at 0% 0%, rgba(94,234,212,0.18), transparent 60%),
+      linear-gradient(120deg, #071018 0%, #0c1a14 100%);
+    color: #eef6f8;
+    border-radius: 1rem;
+    border: 1px solid rgba(94,234,212,0.2);
+    margin-bottom: 1.25rem;
+    font-family: 'Syne', sans-serif;
+}
+.status-badge {
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    display: inline-block;
+    font-family: 'DM Sans', sans-serif;
+}
+.status-connected { background-color: #0f766e; color: #ccfbf1; }
+.status-disconnected { background-color: #7f1d1d; color: #fecaca; }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+# Initialize session state — OAuth failure must not block Tim Cockpit paper desk
 if 'oauth_service' not in st.session_state:
     try:
         st.session_state.oauth_service = ETradeOAuthService()
@@ -70,8 +70,8 @@ if 'oauth_service' not in st.session_state:
         logger.error(f"❌ Failed to initialize OAuth service: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        st.error(f"❌ OAuth initialization failed: {e}")
-        st.stop()
+        st.session_state.oauth_service = None
+        st.sidebar.warning(f"OAuth offline — paper Tim Cockpit still available. ({e})")
 
 oauth_service = st.session_state.oauth_service
 
@@ -91,8 +91,12 @@ if 'funding_service' not in st.session_state:
 with st.sidebar:
     st.markdown("## 🔐 E*TRADE OAuth")
     
-    # Get OAuth status
-    oauth_status = oauth_service.get_status()
+    # Get OAuth status — paper Tim Cockpit works without broker auth
+    if oauth_service is None:
+        oauth_status = {"is_authenticated": False, "auth_time": None, "expiry_time": None}
+        st.caption("OAuth offline — paper engines still live on Tim Cockpit.")
+    else:
+        oauth_status = oauth_service.get_status()
     
     # Status indicator
     if oauth_status['is_authenticated']:
@@ -113,7 +117,7 @@ with st.sidebar:
     st.divider()
     
     # OAuth Controls
-    if not oauth_status['is_authenticated']:
+    if oauth_service is not None and not oauth_status['is_authenticated']:
         st.markdown("### Get Started")
         
         if st.button("🔗 Start OAuth Flow", use_container_width=True, key="start_oauth"):
@@ -176,7 +180,7 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
     
-    else:
+    elif oauth_service is not None:
         st.markdown("### OAuth Actions")
         
         if st.button("🔄 Refresh Status", use_container_width=True, key="refresh_status"):
@@ -200,12 +204,13 @@ with st.sidebar:
     
     st.divider()
     
-    # Navigation
-    st.markdown("### 📊 Pages")
+    # Navigation — Tim Cockpit is home
+    st.markdown("### Desk")
     page = st.radio(
         "Select page:",
-        options=["Dashboard", "E*TRADE Dashboard", "Trading Council", "Settings"],
-        key="page_selector"
+        options=["Tim Cockpit", "Dashboard", "E*TRADE Dashboard", "Trading Council", "Settings"],
+        key="page_selector",
+        index=0,
     )
 
     st.divider()
@@ -240,20 +245,25 @@ with st.sidebar:
     except Exception as e:
         st.error(f"Funding status unavailable: {e}")
 
-# Main content
-st.markdown("""
-<div class="main-header">
-    <h1>🚀 Neon Trader</h1>
-    <p>Multi-Council Trading with E*TRADE Integration</p>
-</div>
-""", unsafe_allow_html=True)
-
-# Page routing
-if page == "Dashboard":
-    st.header("📊 Dashboard")
-    
+# Main content — Tim Cockpit owns the first viewport (brand + AI + engines)
+if page == "Tim Cockpit":
+    try:
+        from pages.tim_cockpit import render_tim_cockpit
+    except Exception:
+        from app.pages.tim_cockpit import render_tim_cockpit
+    render_tim_cockpit(
+        funding_service=st.session_state.get("funding_service"),
+        oauth_status=oauth_status,
+    )
+elif page == "Dashboard":
+    st.markdown("""
+    <div class="main-header">
+        <h1 style="margin:0">NEON</h1>
+        <p style="margin:0.35rem 0 0;opacity:0.8">Portfolio overview · Tim Cockpit is home for snipes</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.header("Dashboard")
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         st.metric("Total Portfolio", "$12,456.32", delta="+$234.56")
     with col2:
@@ -262,110 +272,75 @@ if page == "Dashboard":
         st.metric("Open Positions", "12", delta="+2")
     with col4:
         st.metric("Win Rate", "68.5%", delta="+2.1%")
-    
     st.divider()
-    
-    st.subheader("📈 Performance Overview")
-    
-    # Placeholder for performance chart
+    st.subheader("Performance Overview")
     import plotly.graph_objects as go
-    
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         y=[0, 100, 200, 250, 180, 220, 250, 290, 310],
-        mode='lines+markers',
-        name='Portfolio Value',
-        fill='tozeroy'
+        mode='lines+markers', name='Portfolio Value', fill='tozeroy'
     ))
-    
     fig.update_layout(
         title="Portfolio Growth (Last 30 Days)",
-        xaxis_title="Days",
-        yaxis_title="Value ($)",
-        height=400,
-        hovermode='x unified'
+        xaxis_title="Days", yaxis_title="Value ($)", height=400,
+        hovermode='x unified', paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)', font_color='#9fb3c8',
     )
-    
     st.plotly_chart(fig, use_container_width=True)
 
 elif page == "E*TRADE Dashboard":
-    st.markdown("Redirecting to E*TRADE Dashboard...")
-    # The dashboard page will be auto-loaded by Streamlit
-    # This is handled through the pages/ directory
+    st.markdown("""
+    <div class="main-header"><h1 style="margin:0">E*TRADE</h1>
+    <p style="margin:0.35rem 0 0;opacity:0.8">Broker console</p></div>
+    """, unsafe_allow_html=True)
+    st.info("Open the E*TRADE page in the multipage nav for accounts & orders.")
 
 elif page == "Trading Council":
-    st.header("🤖 Trading Council")
-    
-    st.info("""
-    ### Council Members
-    
-    - **Technical Analysis**: Pattern recognition and technical indicators
-    - **Sentiment Analysis**: News and market sentiment analysis  
-    - **ML Optimization**: Machine learning-driven trading optimization
-    
-    All council members have access to the RAG (Retrieval-Augmented Generation) 
-    memory system for learning from historical trading decisions.
-    """)
-    
+    st.markdown("""
+    <div class="main-header"><h1 style="margin:0">Council</h1>
+    <p style="margin:0.35rem 0 0;opacity:0.8">Secondary to Tim's momentum gates</p></div>
+    """, unsafe_allow_html=True)
+    st.info("Use **Tim Cockpit** for engine-backed snipes. Council is optional second opinion.")
     tabs = st.tabs(["Technical", "Sentiment", "ML Optimization"])
-    
     with tabs[0]:
-        st.subheader("📈 Technical Analysis")
-        st.write("Analyzing market patterns and technical indicators...")
-    
+        st.write("Pattern/indicator vote — confirms Tim, does not override stops.")
     with tabs[1]:
-        st.subheader("💭 Sentiment Analysis")
-        st.write("Analyzing market sentiment and news...")
-    
+        st.write("News/sentiment context only.")
     with tabs[2]:
-        st.subheader("🧠 ML Optimization")
-        st.write("Optimizing trading strategy with ML models...")
+        st.write("Model suggestions feed confidence, not lone entries.")
 
 elif page == "Settings":
-    st.header("⚙️ Settings")
-    
+    st.markdown("""
+    <div class="main-header"><h1 style="margin:0">Settings</h1>
+    <p style="margin:0.35rem 0 0;opacity:0.8">Paper defaults stay on until you arm live</p></div>
+    """, unsafe_allow_html=True)
     st.subheader("E*TRADE Configuration")
-    
     col1, col2 = st.columns(2)
-    
     with col1:
-        environment = st.selectbox(
-            "Environment:",
-            options=["Sandbox", "Production"],
-            index=0
-        )
-    
+        st.selectbox("Environment:", options=["Sandbox", "Production"], index=0)
     with col2:
-        auto_trade = st.toggle("Enable Autonomous Trading", value=False)
-    
+        st.toggle("Enable Autonomous Trading", value=False)
     st.divider()
-    
+    st.subheader("Tim / Paper defaults")
+    st.code("PAPER_MODE=1\nUSE_MOCK_BROKER=1\nOTLP_ENABLED=false", language="bash")
+    st.caption("Live capital stays off until you deliberately arm Production + broker auth.")
+    st.divider()
     st.subheader("Notifications")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.toggle("Email Alerts", value=True)
-    with col2:
+    with c2:
         st.toggle("Desktop Notifications", value=True)
-    with col3:
+    with c3:
         st.toggle("Audio Alerts", value=False)
-    
+    if st.button("Save Settings", use_container_width=True):
+        st.success("Settings saved")
+
+if page != "Tim Cockpit":
     st.divider()
-    
-    if st.button("💾 Save Settings", use_container_width=True):
-        st.success("✅ Settings saved!")
-
-# Footer
-st.divider()
-
-st.markdown("""
----
-**Neon Trader v1.0** | Multi-GPU Trading Council  
-Environment: **Sandbox** | E*TRADE Connected: **""" + 
-("✅ Yes" if oauth_status['is_authenticated'] else "❌ No") + """**
-
-🔗 Resources:
-- [E*TRADE API Docs](https://apisb.etrade.com/docs/api/account/api-account-v1.html)
-- [Neon Trader Docs](https://github.com/your-repo)
-""")
+    st.markdown(
+        "**Neon Trader** · Tim Cockpit engines + AI  \n"
+        "Environment: **Sandbox** · E*TRADE Connected: **"
+        + ("Yes" if oauth_status.get('is_authenticated') else "No")
+        + "**"
+    )

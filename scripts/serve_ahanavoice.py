@@ -103,7 +103,10 @@ def main() -> int:
     parser.add_argument("--slot", default=os.getenv("AHANAVOICE_VOICE", "drew-three-am"))
     args = parser.parse_args()
 
+    # Desk serve borrows AhanaVoice cloud engine by default (our pack identity).
+    # Unset URL so we don't recurse into ourselves.
     os.environ.pop("AHANAVOICE_URL", None)
+    os.environ.setdefault("AHANAVOICE_ENGINE", "borrow")
     client = AhanaVoiceClient(slot=args.slot, base_url="")
     Handler.client = client
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
@@ -112,6 +115,7 @@ def main() -> int:
         json.dumps(
             {
                 "listening": f"http://{args.host}:{args.port}",
+                "engine": status.get("engine"),
                 "pack_bytes": status.get("pack", {}).get("pack_bytes"),
                 "slot": status.get("slot"),
                 "routes": ["/v1/audio/speech", "/api/say", "/v1/voices", "/health"],

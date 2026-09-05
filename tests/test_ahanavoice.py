@@ -6,6 +6,7 @@ import os
 
 os.environ["AHANAVOICE_ALLOW_CLOUD"] = "0"
 os.environ["AHANAVOICE_ALLOW_PREVIEW"] = "1"
+os.environ["AHANAVOICE_ENGINE"] = "preview"
 os.environ.pop("AHANAVOICE_URL", None)
 
 
@@ -41,6 +42,18 @@ def test_desk_preview_speech():
     assert result.pack_bytes == 50950
     assert result.audio[:4] == b"RIFF"
     assert len(result.audio) > 1000
+
+
+def test_engine_mode_borrow_default():
+    from app.services import ahanavoice_client as av
+
+    os.environ.pop("AHANAVOICE_ENGINE", None)
+    assert av._engine_mode() == "borrow"
+    os.environ["AHANAVOICE_ENGINE"] = "local"
+    assert av._engine_mode() == "local"
+    os.environ["AHANAVOICE_ENGINE"] = "preview"
+    assert av._engine_mode() == "preview"
+    os.environ.pop("AHANAVOICE_ENGINE", None)
 
 
 def test_tim_copilot_speak():

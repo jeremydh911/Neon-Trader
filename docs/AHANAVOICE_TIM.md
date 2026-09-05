@@ -1,33 +1,39 @@
 # AhanaVoice for Tim
 
-Tim narrates through **Jeremiah's AhanaVoice** tiny pack — not a cloud clone mill, not a 7B.
+Tim narrates through **Jeremiah’s AhanaVoice** tiny pack — borrowed mouth, local 16KB-class seats.
 
-## What we borrowed
+## Borrow model
 
-| Asset | Path / value |
-|-------|----------------|
-| Pack | `vendor/ahanavoice/jeremiah-av-experts-cpu.aarm` (50,950 B) |
-| Roster | `vendor/ahanavoice/individuals.json` (12 seats) |
-| Default Tim seat | `drew-three-am` (aliases: `tim`, `jeremiah`) |
-| Profile size | 512 B / seat (256×f16) — the public ~16KB story is the seat SKU |
+| Layer | What | Where |
+|-------|------|--------|
+| **Voices (16KB-class)** | `.aarm` pack + roster | `vendor/ahanavoice/` (synced from ahanavoice.com) |
+| **Engine (mouth)** | Neural TTS | Borrowed: `POST https://ahanavoice.com/api/say` or `AHANAVOICE_URL` / `serve_aarm` |
+| **Fallback** | Desk-preview WAV | Seat pitch/rate only — labeled `desk-preview`, not neural |
 
-Public contract matches [ahanavoice.com](https://ahanavoice.com): plug `voice=<slot>` into OpenAI-style `/v1/audio/speech`.
+Default engine mode: **`AHANAVOICE_ENGINE=borrow`** (cloud mouth first, then local URL, then preview).
 
-## Speech path (priority)
-
-1. **`AHANAVOICE_URL`** — real `serve_aarm` / desk mouth (`POST /v1/audio/speech`)
-2. **Cloud** — `POST https://ahanavoice.com/api/say` when `AHANAVOICE_ALLOW_CLOUD=1`
-3. **Desk-preview** — local WAV shaped by seat pitch/rate (honest fallback; **not** the neural decoder)
-
-## Run desk mouth locally
+## Sync pack + roster
 
 ```bash
-pip install zstandard
-python scripts/serve_ahanavoice.py --port 9635
-export AHANAVOICE_URL=http://127.0.0.1:9635
+python scripts/sync_ahanavoice.py
+# → vendor/ahanavoice/jeremiah-av-experts-cpu.aarm  (~50,950 B)
+# → vendor/ahanavoice/individuals.json              (12 seats)
 ```
 
-Cockpit: **Speak (AhanaVoice)** plays Tim's last narration / decision line.
+## Speak
+
+```bash
+# Borrow AhanaVoice cloud engine with our pack identity (default)
+export AHANAVOICE_ENGINE=borrow
+export AHANAVOICE_VOICE=drew-three-am   # aliases: tim, jeremiah
+
+# Or point at a real serve_aarm
+export AHANAVOICE_ENGINE=local
+export AHANAVOICE_URL=http://127.0.0.1:9635
+python scripts/serve_ahanavoice.py --port 9635
+```
+
+Cockpit: **Speak (AhanaVoice)** plays Tim’s last narration / decision line.
 
 ## Env
 

@@ -1,0 +1,16 @@
+{
+  "source": "https://ahanavoice.com",
+  "brand": "AhanaVoice",
+  "pack": "jeremiah-av-experts-cpu.aarm",
+  "pack_bytes": 50950,
+  "pack_sha256": "3c6b412a3ad6228c62597e3722974305e00b95e9ac33f50890bf56f23984bd7f",
+  "roster": "individuals.json",
+  "seats": 12,
+  "wrote_pack": false,
+  "wrote_roster": false,
+  "engine": {
+    "borrow": "POST https://ahanavoice.com/api/say",
+    "openai_style": "POST {AHANAVOICE_URL}/v1/audio/speech",
+    "note": "16KB-class seats live in the .aarm; mouth/engine is borrowed"
+  }
+}

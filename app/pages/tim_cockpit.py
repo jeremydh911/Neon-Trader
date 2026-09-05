@@ -386,7 +386,7 @@ def render_tim_cockpit(funding_service=None, oauth_status: Optional[Dict] = None
                 help="Jeremiah's AhanaVoice pack — drew-three-am seat by default.",
             )
         with s2:
-            st.caption("16KB .aarm seats · pack borrowed from AhanaVoice · engines still decide")
+            st.caption("Borrowed AhanaVoice engine · our 16KB .aarm seats · engines still decide")
         if speak_clicked and speak_src:
             with st.spinner("Tim speaking…"):
                 spoken = copilot.speak(speak_src)

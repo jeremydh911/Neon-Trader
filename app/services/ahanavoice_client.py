@@ -71,6 +71,22 @@ def _allow_preview() -> bool:
     return os.getenv("AHANAVOICE_ALLOW_PREVIEW", "1").lower() in ("1", "true", "yes")
 
 
+def _engine_mode() -> str:
+    """
+    borrow  — prefer AhanaVoice cloud mouth with our local 16KB pack identity (default)
+    local   — prefer AHANAVOICE_URL / serve_aarm first
+    preview — desk-preview only
+    """
+    mode = (os.getenv("AHANAVOICE_ENGINE") or "borrow").strip().lower()
+    if mode in ("borrow", "cloud", "ahanavoice"):
+        return "borrow"
+    if mode in ("local", "serve", "serve_aarm", "url"):
+        return "local"
+    if mode in ("preview", "desk", "desk-preview"):
+        return "preview"
+    return "borrow"
+
+
 def _http_json(
     url: str,
     payload: Dict[str, Any],
@@ -181,12 +197,14 @@ class AhanaVoiceClient:
         return {
             "enabled": True,
             "brand": "AhanaVoice",
+            "engine": _engine_mode(),
             "slot": seat.slot,
             "seat": seat.as_dict(),
             "pack": self._fp,
             "url": self.base_url or None,
             "cloud": _cloud_base() if _allow_cloud() else None,
             "preview_allowed": _allow_preview(),
+            "borrow": "ahanavoice.com/api/say + vendored 16KB-class .aarm",
         }
 
     def speak(self, text: str, *, slot: Optional[str] = None) -> SpeechResult:
@@ -196,39 +214,50 @@ class AhanaVoiceClient:
         text = text[:1800]
         seat = self.seat(slot)
         pack_bytes = self.pack_bytes or 50950
+        engine = _engine_mode()
 
-        if self.base_url:
+        def _try_local() -> Optional[SpeechResult]:
+            if not self.base_url:
+                return None
             try:
-                result = self._speak_openai_style(text, seat)
-                if result:
-                    return result
+                return self._speak_openai_style(text, seat)
             except Exception as exc:
                 logger.warning("AhanaVoice serve_aarm path failed: %s", exc)
+                return None
 
-        if _allow_cloud():
+        def _try_cloud() -> Optional[SpeechResult]:
+            if not _allow_cloud():
+                return None
             try:
-                result = self._speak_cloud_say(text, seat, pack_bytes)
-                if result:
-                    return result
+                return self._speak_cloud_say(text, seat, pack_bytes)
             except Exception as exc:
                 logger.warning("AhanaVoice cloud say failed: %s", exc)
+                return None
 
-        if not _allow_preview():
-            raise RuntimeError(
-                "AhanaVoice speech unavailable (no serve_aarm, cloud quiet, preview disabled)"
+        def _preview() -> SpeechResult:
+            if not _allow_preview():
+                raise RuntimeError(
+                    "AhanaVoice speech unavailable (no borrowed engine, preview disabled)"
+                )
+            wav = desk_preview_wav(text, seat, pack_bytes=pack_bytes)
+            return SpeechResult(
+                audio=wav,
+                content_type="audio/wav",
+                mode="desk-preview",
+                slot=seat.slot,
+                pack_bytes=pack_bytes,
+                detail=(
+                    "Local preview shaped by AhanaVoice seat pitch/rate; "
+                    "borrowed neural mouth needs cloud or serve_aarm."
+                ),
             )
-        wav = desk_preview_wav(text, seat, pack_bytes=pack_bytes)
-        return SpeechResult(
-            audio=wav,
-            content_type="audio/wav",
-            mode="desk-preview",
-            slot=seat.slot,
-            pack_bytes=pack_bytes,
-            detail=(
-                "Local preview shaped by AhanaVoice seat pitch/rate; "
-                "neural decode needs serve_aarm or cloud."
-            ),
-        )
+
+        # Default "borrow": AhanaVoice cloud engine first, then local URL, then preview.
+        if engine == "preview":
+            return _preview()
+        if engine == "local":
+            return _try_local() or _try_cloud() or _preview()
+        return _try_cloud() or _try_local() or _preview()
 
     def _speak_openai_style(self, text: str, seat: VoiceSeat) -> Optional[SpeechResult]:
         url = f"{self.base_url}/v1/audio/speech"
@@ -261,10 +290,12 @@ class AhanaVoiceClient:
     def _speak_cloud_say(
         self, text: str, seat: VoiceSeat, pack_bytes: int
     ) -> Optional[SpeechResult]:
+        """Borrow AhanaVoice cloud engine; identify with our vendored 16KB pack."""
         url = f"{_cloud_base()}/api/say"
+        # Match talk.js contract exactly.
         payload = {
             "text": text,
-            "gender": seat.gender,
+            "gender": seat.gender or "male",
             "slot": seat.slot,
         }
         status, data, hdrs = _http_json(
@@ -273,7 +304,11 @@ class AhanaVoiceClient:
             headers={
                 "Origin": _cloud_base(),
                 "Referer": f"{_cloud_base()}/talk",
+                "X-Ahana-Pack-Bytes": str(pack_bytes),
+                "X-Ahana-Pack": "jeremiah-av-experts-cpu.aarm",
+                "X-Ahana-Client": "neon-trader-tim",
             },
+            timeout=45.0,
         )
         if status >= 400 or not data:
             logger.info("cloud /api/say HTTP %s: %s", status, data[:200])
@@ -285,6 +320,17 @@ class AhanaVoiceClient:
         if data[:4] not in (b"RIFF", b"ID3", b"\xff\xfb", b"OggS"):
             if "audio" not in ctype:
                 return None
+        # Reject near-silent stubs (cloud sometimes returns empty PCM).
+        if data[:4] == b"RIFF" and len(data) > 44:
+            pcm = data[44:]
+            # sample a stride of int16 abs peaks
+            peak = 0
+            for i in range(0, min(len(pcm), 200_000) - 1, 64):
+                sample = int.from_bytes(pcm[i : i + 2], "little", signed=True)
+                peak = max(peak, abs(sample))
+            if peak < 64:
+                logger.info("cloud /api/say near-silent audio rejected (peak=%s)", peak)
+                return None
         pb = int(hdrs.get("x-ahana-pack-bytes") or pack_bytes or 0)
         return SpeechResult(
             audio=data,
@@ -292,7 +338,7 @@ class AhanaVoiceClient:
             mode="cloud",
             slot=seat.slot,
             pack_bytes=pb or pack_bytes,
-            detail="Borrowed AhanaVoice cloud mouth with Jeremiah pack",
+            detail="Borrowed AhanaVoice cloud engine · Jeremiah 16KB-class pack",
         )
 
 

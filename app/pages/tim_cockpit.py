@@ -62,9 +62,12 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 .tim-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.75rem;
   margin: 1.25rem 0 1.5rem;
+}
+@media (max-width: 900px) {
+  .tim-strip { grid-template-columns: repeat(2, 1fr); }
 }
 .tim-chip {
   background: var(--panel);
@@ -203,12 +206,17 @@ def _render_risk_strip(strip: Dict[str, Any]) -> None:
     pnl = float(strip.get("daily_pnl") or 0)
     pnl_cls = "pos" if pnl >= 0 else "neg"
     mode = "PAPER" if strip.get("paper_mode") else "LIVE"
+    mem_backend = (strip.get("memory_backend") or "—").upper()
+    if mem_backend.startswith("AHANA"):
+        mem_backend = "AHANA"
+    mem_n = strip.get("memory_vectors") or 0
     st.markdown(
         f"""
         <div class="tim-strip">
           <div class="tim-chip"><div class="k">Capital</div><div class="v">${strip.get('capital', 0):,.0f}</div></div>
           <div class="tim-chip"><div class="k">Daily PnL</div><div class="v {pnl_cls}">${pnl:,.2f}</div></div>
           <div class="tim-chip"><div class="k">Open</div><div class="v">{strip.get('open_positions', 0)}</div></div>
+          <div class="tim-chip"><div class="k">Memory</div><div class="v warn">{mem_backend} · {mem_n}</div></div>
           <div class="tim-chip"><div class="k">Mode</div><div class="v warn">{mode}</div></div>
         </div>
         """,
@@ -362,6 +370,20 @@ def render_tim_cockpit(funding_service=None, oauth_status: Optional[Dict] = None
 
         if decision and decision.get("demo"):
             st.caption("Demo tape active — live quotes offline. Gates still enforce Tim’s rules.")
+
+        mem = strip.get("memory") or {}
+        with st.expander("AhanaFlow memory (compressed RAG)"):
+            st.write(
+                f"Backend: **{strip.get('memory_backend', '—')}** · "
+                f"vectors **{strip.get('memory_vectors', 0)}** · "
+                f"WAL **{mem.get('wal_size_bytes', '—')}** bytes"
+            )
+            st.caption(
+                "Decisions and snipes land in AhanaFlow VectorStateEngineV2 "
+                "(https://www.ahanaflow.com). Query path uses compress_results for compact RAG."
+            )
+            if decision and decision.get("memory_context"):
+                st.code(decision["memory_context"], language=None)
 
         # Secondary: council / oauth status — not the hero
         with st.expander("Council & broker (secondary)"):

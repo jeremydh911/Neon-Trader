@@ -99,10 +99,16 @@ class TraderChatAdapter:
             # Get memory context if available
             memory_context = ""
             if self.memory:
-                from .rag_memory import TraderMemoryAgent
-                memory_agent = TraderMemoryAgent(self.memory)
-                memory_data = memory_agent.analyze_with_memory(query, symbol)
-                memory_context = memory_data.get("memory_context", "")
+                try:
+                    if hasattr(self.memory, "recall_context"):
+                        memory_context = self.memory.recall_context(query, top_k=3, symbol=symbol) or ""
+                    else:
+                        from .rag_memory import TraderMemoryAgent
+                        memory_agent = TraderMemoryAgent(self.memory)
+                        memory_data = memory_agent.analyze_with_memory(query, symbol)
+                        memory_context = memory_data.get("memory_context", "")
+                except Exception as mem_err:
+                    logger.debug("memory context skipped: %s", mem_err)
             
             # Combine stock and memory context
             combined_context = stock_data_context + (f"\n\n{memory_context}" if memory_context else "")

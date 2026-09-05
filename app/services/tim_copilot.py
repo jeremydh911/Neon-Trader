@@ -22,12 +22,29 @@ def _now() -> str:
 class TimCopilot:
     """AI-centric trading co-pilot backed by momentum + stop engines."""
 
-    def __init__(self, trader=None, funding_service=None, paper_mode: bool = True):
+    def __init__(self, trader=None, funding_service=None, paper_mode: bool = True, memory=None):
         self.paper_mode = paper_mode or os.getenv("PAPER_MODE", "1").lower() in ("1", "true", "yes")
         self.funding_service = funding_service
         self.trader = trader
+        self.memory = memory
         self.history: List[Dict[str, Any]] = []
+        self._init_memory()
         self._init_trader()
+
+    def _init_memory(self) -> None:
+        if self.memory is not None:
+            return
+        try:
+            from .ahanaflow_memory import get_memory_store
+
+            self.memory = get_memory_store()
+            logger.info(
+                "Tim memory backend=%s",
+                getattr(self.memory, "_backend", type(self.memory).__name__),
+            )
+        except Exception as e:
+            logger.warning("Tim memory init failed: %s", e)
+            self.memory = None
 
     def _init_trader(self) -> None:
         if self.trader is not None:
@@ -40,7 +57,7 @@ class TimCopilot:
                 or os.getenv("USE_MOCK_BROKER", "").lower() in ("1", "true", "yes")
             ) else "etrade"
             self.trader = AutonomousTrader(
-                memory_service=None,
+                memory_service=self.memory,
                 llm_service=None,
                 council=None,
                 broker_type=broker_type,
@@ -52,6 +69,58 @@ class TimCopilot:
         except Exception as e:
             logger.error("TimCopilot trader init failed: %s", e)
             self.trader = None
+
+    def _remember_decision(self, decision: Dict[str, Any]) -> None:
+        if not self.memory or not decision:
+            return
+        try:
+            content = (
+                f"{decision.get('action')} {decision.get('symbol')} "
+                f"conf={decision.get('confidence')} — {decision.get('reason')}"
+            )
+            meta = {
+                "action": decision.get("action"),
+                "confidence": decision.get("confidence"),
+                "reason": decision.get("reason"),
+                "symbol": decision.get("symbol"),
+            }
+            if hasattr(self.memory, "add_decision"):
+                try:
+                    self.memory.add_decision(
+                        content, decision=decision, tags=["tim", "engine"]
+                    )
+                except TypeError:
+                    self.memory.add_decision(
+                        content, metadata=meta, tags=["tim", "engine"]
+                    )
+            elif hasattr(self.memory, "remember"):
+                self.memory.remember(
+                    content,
+                    kind="decision",
+                    symbol=decision.get("symbol"),
+                    tags=["tim", "engine"],
+                    metadata=meta,
+                )
+        except Exception as e:
+            logger.debug("remember decision failed: %s", e)
+
+    def _recall_for(self, query: str, symbol: Optional[str] = None) -> str:
+        if not self.memory:
+            return ""
+        try:
+            if hasattr(self.memory, "recall_context"):
+                return self.memory.recall_context(query, top_k=3, symbol=symbol) or ""
+            hits = self.memory.search(query, limit=3)
+            if not hits:
+                return ""
+            lines = ["[memory]"]
+            for h in hits:
+                text = getattr(h, "content", None) or (h.get("content") if isinstance(h, dict) else str(h))
+                lines.append(f"- {str(text)[:160]}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug("recall failed: %s", e)
+            return ""
 
     def extract_symbol(self, text: str) -> Optional[str]:
         common = {
@@ -120,7 +189,8 @@ class TimCopilot:
             entry_price=price,
             stop_price=stop_px,
         )
-        narration = self._narrate(symbol, report, shares, capital, demo=demo)
+        memory_ctx = self._recall_for(f"{symbol} momentum {report['action']}", symbol=symbol)
+        narration = self._narrate(symbol, report, shares, capital, demo=demo, memory_ctx=memory_ctx)
 
         result = {
             "status": "success",
@@ -136,11 +206,13 @@ class TimCopilot:
             "shares": int(shares),
             "capital": capital,
             "narration": narration,
+            "memory_context": memory_ctx,
             "research": research,
             "demo": demo,
             "paper_mode": self.paper_mode,
             "timestamp": _now(),
         }
+        self._remember_decision(result)
         self.history.append({"type": "analyze", "symbol": symbol, "action": result["action"]})
         return result
 
@@ -193,6 +265,17 @@ class TimCopilot:
             "position": position,
             "timestamp": _now(),
         }
+        if self.memory and hasattr(self.memory, "remember"):
+            try:
+                self.memory.remember(
+                    f"SNIPE {shares} {symbol} @ {price:.2f} stop armed",
+                    kind="trade_result",
+                    symbol=symbol,
+                    tags=["tim", "snipe", "paper" if self.paper_mode else "live"],
+                    metadata={"shares": shares, "price": price, "side": "BUY"},
+                )
+            except Exception:
+                pass
         self.history.append({"type": "snipe", "symbol": symbol, "shares": shares})
         return out
 
@@ -282,6 +365,7 @@ class TimCopilot:
         shares: int,
         capital: float,
         demo: bool = False,
+        memory_ctx: str = "",
     ) -> str:
         action = report["action"]
         conf = float(report["confidence"])
@@ -313,6 +397,9 @@ class TimCopilot:
                 f"**{symbol} — NO SNIPE**{demo_note}\n"
                 f"{reason}\nGates {gates_ok}/{gates_n}. Waiting for stacked confirmation."
             )
+
+        if memory_ctx:
+            base = f"{base}\n\n{memory_ctx}"
 
         polished = self._llm_polish(symbol, action, reason)
         if polished:
@@ -359,12 +446,25 @@ class TimCopilot:
                     daily_pnl = float(risk.get("daily_pnl") or 0)
                 except Exception:
                     pass
+        mem_stats: Dict[str, Any] = {}
+        if self.memory:
+            try:
+                if hasattr(self.memory, "stats"):
+                    mem_stats = self.memory.stats() or {}
+                elif hasattr(self.memory, "get_memory_summary"):
+                    mem_stats = self.memory.get_memory_summary() or {}
+            except Exception:
+                mem_stats = {}
         return {
             "capital": capital,
             "open_positions": len(positions),
             "daily_pnl": daily_pnl,
             "paper_mode": self.paper_mode,
             "positions": positions,
+            "memory": mem_stats,
+            "memory_backend": mem_stats.get("backend")
+            or ("ahanaflow" if type(self.memory).__name__ == "AhanaFlowMemory" else "legacy"),
+            "memory_vectors": mem_stats.get("vectors") or mem_stats.get("total_memories") or 0,
         }
 
 

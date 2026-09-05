@@ -541,11 +541,23 @@ class CouncilMemoryAgent:
 _memory_store = None
 
 
-def get_memory_store() -> RAGMemoryStore:
-    """Get or create singleton memory store"""
+def get_memory_store():
+    """
+    Get or create singleton memory store.
+
+    Prefers AhanaFlow compressed RAG (vendor/AhanaFlow) when available;
+    falls back to the local JSON/pickle RAGMemoryStore.
+    Set AHANAFLOW_MEMORY=0 to force legacy.
+    """
     global _memory_store
     if _memory_store is None:
-        _memory_store = RAGMemoryStore()
+        try:
+            from .ahanaflow_memory import get_memory_store as ahana_get
+
+            _memory_store = ahana_get()
+        except Exception as e:
+            logger.warning("AhanaFlow memory unavailable (%s) — legacy RAG", e)
+            _memory_store = RAGMemoryStore()
     return _memory_store
 
 

@@ -70,3 +70,18 @@ Default home is **Tim Cockpit**:
 - Persistent risk strip (capital · daily PnL · open · mode)
 
 Engines decide. AI narrates. Council stays secondary.
+
+## AhanaFlow compressed RAG memory
+
+Neon Trader vendors [AhanaFlow](https://www.ahanaflow.com) (`vendor/AhanaFlow`) for Tim’s memory:
+
+```bash
+git submodule update --init --recursive vendor/AhanaFlow
+export AHANAFLOW_MEMORY=1
+export AHANAFLOW_WAL=./data/ahanaflow/tim_memory.wal
+```
+
+- Decisions + paper snipes are upserted into `VectorStateEngineV2`
+- Recall uses `compress_results=True` (compressed RAG context windows)
+- `AHANAFLOW_MEMORY=0` forces the legacy JSON/pickle store
+- Cockpit risk strip shows **Memory · AHANA · N** vector count

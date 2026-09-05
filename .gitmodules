@@ -1,0 +1,3 @@
+[submodule "vendor/AhanaFlow"]
+	path = vendor/AhanaFlow
+	url = https://github.com/AhanaAi-Company/AhanaFlow.git

@@ -161,24 +161,66 @@ class AhanaFlowMemory:
     def _init_selfhosted(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         from .ahanaflow_vector_client import AhanaFlowVectorClient
 
+        bind_host = host or os.getenv("AHANAFLOW_HOST", "127.0.0.1")
+        if bind_host in ("0.0.0.0", "::") and os.getenv("AHANAFLOW_ALLOW_PUBLIC", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            logger.warning(
+                "AHANAFLOW_HOST=%s is public; prefer 127.0.0.1 for Neon Trader. "
+                "Set AHANAFLOW_ALLOW_PUBLIC=1 to silence.",
+                bind_host,
+            )
+
         self.client = AhanaFlowVectorClient(
-            host=host or os.getenv("AHANAFLOW_HOST", "127.0.0.1"),
+            host=bind_host,
             port=int(port or os.getenv("AHANAFLOW_PORT", "9634")),
+            api_key=os.getenv("AHANAFLOW_API_KEY"),
+            retries=int(os.getenv("AHANAFLOW_RETRIES", "3")),
         )
-        self.client.ping()
-        try:
-            self.client.create_collection(self.collection, self.dimensions, metric="cosine")
-        except Exception:
-            # collection may already exist
-            pass
+        health = self.client.health()
+        if not health.get("ok"):
+            raise ConnectionError(health.get("error") or "AhanaFlow health check failed")
+        self._ensure_collection()
         self._backend = "ahanaflow-selfhosted"
         logger.info(
-            "AhanaFlow memory ready mode=selfhosted collection=%s dim=%s %s:%s",
+            "AhanaFlow memory ready mode=selfhosted collection=%s dim=%s %s:%s latency_ms=%s",
             self.collection,
             self.dimensions,
             self.client.host,
             self.client.port,
+            health.get("latency_ms"),
         )
+
+    def _ensure_collection(self) -> None:
+        """Idempotent collection bootstrap for selfhosted + embedded."""
+        if self.client is not None:
+            try:
+                existing = self.client.list_collections() or []
+                names = {
+                    (c.get("name") if isinstance(c, dict) else c)
+                    for c in (existing if isinstance(existing, list) else [])
+                }
+                if self.collection not in names:
+                    self.client.create_collection(
+                        self.collection, self.dimensions, metric="cosine"
+                    )
+            except Exception as e:
+                # Fall back to create; engine treats duplicate create as OK
+                logger.debug("list_collections failed (%s); trying create", e)
+                try:
+                    self.client.create_collection(
+                        self.collection, self.dimensions, metric="cosine"
+                    )
+                except Exception as ce:
+                    logger.debug("create_collection note: %s", ce)
+            return
+        if self.engine is not None:
+            try:
+                self.engine.create_collection(self.collection, self.dimensions, metric="cosine")
+            except ValueError:
+                pass
 
     def _init_embedded(self, wal_path: Optional[Union[str, Path]] = None) -> None:
         if not _ensure_ahanaflow_path():
@@ -191,10 +233,7 @@ class AhanaFlowMemory:
         root = Path(wal_path or os.getenv("AHANAFLOW_WAL", "./data/ahanaflow/tim_memory.wal"))
         root.parent.mkdir(parents=True, exist_ok=True)
         self.engine = VectorStateEngineV2(root)
-        try:
-            self.engine.create_collection(self.collection, self.dimensions, metric="cosine")
-        except ValueError:
-            pass
+        self._ensure_collection()
         self._backend = "ahanaflow-embedded"
         logger.info(
             "AhanaFlow memory ready mode=embedded collection=%s dim=%s wal=%s",
@@ -221,6 +260,7 @@ class AhanaFlowMemory:
                 metadata=meta,
                 payload=payload,
                 ttl_seconds=ttl_seconds,
+                expected_dimensions=self.dimensions,
             )
             return
         assert self.engine is not None
@@ -246,6 +286,7 @@ class AhanaFlowMemory:
                 top_k=top_k,
                 compress_results=compress,
                 strategy="exact",
+                expected_dimensions=self.dimensions,
             )
         else:
             assert self.engine is not None
@@ -294,6 +335,9 @@ class AhanaFlowMemory:
         council_votes: Optional[Dict[str, Any]] = None,
         outcome: Optional[str] = None,
     ) -> str:
+        content = (content or "").strip()
+        if not content:
+            raise ValueError("remember() requires non-empty content")
         mid = memory_id or f"m_{uuid.uuid4().hex[:12]}"
         meta: Dict[str, Any] = {
             "kind": kind,
@@ -411,11 +455,16 @@ class AhanaFlowMemory:
         k = int(top_k or limit or 5)
         mt = kind or memory_type
         vector = _hash_embed(query, self.dimensions)
-        hits = self._query(
-            vector,
-            top_k=max(k * 3, k) if time_limit or symbol or mt else k,
-            compress=compress,
-        )
+        try:
+            hits = self._query(
+                vector,
+                top_k=max(k * 3, k) if time_limit or symbol or mt else k,
+                compress=compress,
+            )
+        except Exception as e:
+            # Soft-fail so Tim keeps trading if memory blips
+            logger.warning("AhanaFlow search soft-failed: %s", e)
+            return []
         cutoff = None
         if time_limit:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=time_limit)).isoformat()
@@ -548,6 +597,42 @@ class AhanaFlowMemory:
 
     def get_memory_stats(self) -> Dict[str, Any]:
         return self.stats()
+
+    def health(self) -> Dict[str, Any]:
+        """Production readiness probe for Tim / ops."""
+        base = {
+            "backend": self._backend,
+            "mode": "selfhosted" if self.client else "embedded",
+            "collection": self.collection,
+            "dimensions": self.dimensions,
+        }
+        try:
+            if self.client is not None:
+                h = self.client.health()
+                base.update(h)
+                base["ok"] = bool(h.get("ok"))
+                return base
+            # embedded: stats + fixed-id upsert (no memory pollution growth)
+            s = self.stats()
+            probe_id = self.remember(
+                "__health_probe__",
+                kind="note",
+                tags=["health"],
+                memory_id="health_probe",
+            )
+            hits = self.search("__health_probe__", limit=1, compress=False)
+            base.update(
+                {
+                    "ok": True,
+                    "stats": s,
+                    "probe_id": probe_id,
+                    "probe_hits": len(hits),
+                }
+            )
+            return base
+        except Exception as e:
+            base.update({"ok": False, "error": str(e)})
+            return base
 
     def close(self) -> None:
         if self.client is not None:

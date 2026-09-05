@@ -98,7 +98,17 @@ export AHANAFLOW_WAL=./data/ahanaflow/tim_memory.wal
 | `auto` | Try selfhosted → fall back to embedded |
 | `remote` | Reserved for cloud API once Grok’s backend is live |
 
+See **[AHANAFLOW_PRODUCTION.md](./AHANAFLOW_PRODUCTION.md)** for the production checklist,
+health probes, and auth.
+
+```bash
+./scripts/run_ahanaflow_selfhost.sh
+python3 scripts/ahanaflow_healthcheck.py
+python3 scripts/smoke_ahanaflow_prod.py
+```
+
 - Decisions + paper snipes upsert into AhanaFlow vectors
 - Recall uses `compress_results=True` (compressed RAG windows)
+- Search soft-fails to `[]` if the vector server blips (Tim keeps trading)
 - `AHANAFLOW_MEMORY=0` forces the legacy JSON/pickle store
 - Cockpit risk strip shows **Memory · AHANA · N**

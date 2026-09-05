@@ -3,7 +3,10 @@ Real Stock Data Service
 Fetches live stock prices and data from APIs
 """
 
-import yfinance as yf
+try:
+    import yfinance as yf
+except ImportError:  # paper/test environments may omit yfinance
+    yf = None
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
@@ -20,7 +23,14 @@ class StockDataService:
         self.cache_file = "/app/data/stock_cache.json"
         self.cache_duration = 300  # 5 minutes
         self.cache = {}
+        self.yfinance_available = yf is not None
+        if not self.yfinance_available:
+            logger.warning("yfinance not installed — StockDataService will return placeholders")
         self.load_cache()
+
+    def _require_yf(self):
+        if yf is None:
+            raise RuntimeError("yfinance not installed — pip install yfinance for live quotes")
     
     def load_cache(self):
         """Load cached stock data from file"""

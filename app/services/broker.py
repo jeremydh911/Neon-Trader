@@ -312,8 +312,25 @@ class ETradeBroker(BrokerConnection):
 _broker = None
 
 def get_broker(broker_type: str = 'etrade', use_sandbox: bool = True):
-    """Get or create broker connection"""
+    """Get or create broker connection.
+
+    Paper/test path:
+      - broker_type='mock' OR env USE_MOCK_BROKER=1 / PAPER_MODE=1 → MockBroker
+      - Never reuse a live singleton when mock is requested.
+    """
     global _broker
+    want_mock = (
+        str(broker_type).lower() == 'mock'
+        or os.getenv('USE_MOCK_BROKER', '').lower() in ('1', 'true', 'yes')
+        or os.getenv('PAPER_MODE', '').lower() in ('1', 'true', 'yes')
+    )
+    if want_mock:
+        from .mock_broker import MockBroker
+        mock = MockBroker()
+        mock.connect()
+        logger.info("🧪 Using MockBroker (paper/test — no live orders)")
+        return mock
+
     if _broker is None:
         if broker_type.lower() == 'etrade':
             _broker = ETradeBroker(use_sandbox=use_sandbox)

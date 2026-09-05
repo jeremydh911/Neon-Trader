@@ -83,12 +83,28 @@ class AutonomousTrader:
         logger.info(f"🔗 Broker: {broker_type.upper()} ({'SANDBOX' if use_sandbox else 'LIVE'})")
 
     def _init_broker(self):
-        """Initialize broker connection"""
+        """Initialize broker connection (mock-first when PAPER_MODE / USE_MOCK_BROKER)."""
+        import os
         try:
+            want_mock = (
+                str(self.broker_type).lower() == "mock"
+                or os.getenv("USE_MOCK_BROKER", "").lower() in ("1", "true", "yes")
+                or os.getenv("PAPER_MODE", "").lower() in ("1", "true", "yes")
+            )
+            if want_mock:
+                from .mock_broker import MockBroker
+                self.broker = MockBroker()
+                self.broker.connect()
+                self.broker_type = "mock"
+                logger.info("🧪 MockBroker connected (paper/test mode)")
+                return
+
             from .broker import get_broker
             self.broker = get_broker(broker_type=self.broker_type, use_sandbox=self.use_sandbox)
-            if self.broker.connect():
+            if self.broker and hasattr(self.broker, "connect") and self.broker.connect():
                 logger.info(f"✅ {self.broker_type.upper()} broker connected successfully")
+            elif self.broker:
+                logger.info(f"✅ {self.broker_type.upper()} broker ready")
             else:
                 logger.warning(f"⚠️ Failed to connect {self.broker_type.upper()} broker")
                 self.broker = None

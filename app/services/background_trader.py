@@ -5,6 +5,7 @@ Runs as long as E*TRADE API is authenticated and enabled in settings
 """
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -50,6 +51,12 @@ class BackgroundTraderService:
             watchlist: Optional list of tickers or ["ALL"] for dynamic discovery
             update_callback: Optional callback function for UI updates
         """
+        import os
+        # Paper/test day: sandbox + no OAuth gate unless explicitly live
+        paper = os.getenv("PAPER_MODE", "").lower() in ("1", "true", "yes")
+        if paper:
+            use_sandbox = True
+
         self.autonomous_trader = autonomous_trader
         self.oauth_service = oauth_service
         self.pricing_service = pricing_service
@@ -108,6 +115,11 @@ class BackgroundTraderService:
         self.config.setdefault('require_oauth', True)
         # Allow bypass in tests or special cases
         self.config.setdefault('allow_start_without_oauth', False)
+        # Paper day: never block mock/sandbox start on missing OAuth
+        if self.use_sandbox and os.getenv("PAPER_MODE", "").lower() in ("1", "true", "yes"):
+            self.config["require_oauth"] = False
+            self.config["allow_start_without_oauth"] = True
+            logger.info("📄 PAPER_MODE: OAuth not required for sandbox start")
         # Popular US market tickers for ALL mode
         self.popular_tickers = self._get_popular_us_tickers()
         

@@ -1,0 +1,31 @@
+# Neon Trader — local / CI requirements (paper-test ready)
+# Install: pip install -r requirements.txt
+
+# Core
+numpy
+pandas
+python-dotenv
+requests
+scikit-learn
+
+# App / API
+fastapi
+uvicorn
+streamlit
+plotly
+
+# Market data (optional at runtime; soft-fail if missing)
+yfinance
+
+# Brokers (optional — mock path works without these)
+# pyetrade
+# alpaca-trade-api
+
+# Observability (optional)
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation
+
+# Test
+pytest

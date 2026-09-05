@@ -1,36 +1,43 @@
 # Autonomous Trading Smoke Test
 
-This document explains how to run a local smoke test to verify autonomous trading works in sandbox mode (no real broker required).
-
-Steps:
-
-1. Ensure your virtualenv is activated and project dependencies are installed.
-
-2. Run the smoke script:
+Prefer the full paper readiness path:
 
 ```bash
-python scripts/smoke_autonomous_trade.py
+./scripts/run_paper_test_today.sh
 ```
 
-Expected output:
-- `Before execution: trades= []`
-- `After execution: trades= [...]` with at least one `MockTrade`
-- `Trade history:` showing an executed trade record
+Details: [TEST_TODAY.md](TEST_TODAY.md)
 
-3) Run the project's tests (from project root):
+## Quick smoke only
 
 ```bash
-cd ~/Desktop/neon-trader-gpu
-pytest -q tests
+export PAPER_MODE=1 USE_MOCK_BROKER=1 OTLP_ENABLED=false PYTHONPATH=.
+python3 scripts/smoke_autonomous_trade.py
 ```
 
-3. Run the project's tests (from project root):
+Expected:
+- Mock BUY fill
+- Protective STOP armed
+
+## Full paper cycle
 
 ```bash
-cd ~/Desktop/neon-trader-gpu
+python3 scripts/paper_cycle.py
+```
+
+Expected:
+- Dip rejected
+- Momentum BUY
+- Stop armed
+- Stop hit → market SELL
+- Position closed
+
+## Pytest
+
+```bash
 pytest -q tests
 ```
 
 Notes:
-- The smoke script uses `MockBroker` and `FundingService` and does not touch any external APIs.
-- If you want a full streamlit run, start the app and ensure `FundingService`'s `funding.json` has allocation available for trades.
+- Uses `MockBroker` + `FundingService` — no external broker APIs.
+- Live capital stays OFF in this path.

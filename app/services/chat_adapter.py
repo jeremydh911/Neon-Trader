@@ -99,23 +99,47 @@ class TraderChatAdapter:
             # Get memory context if available
             memory_context = ""
             if self.memory:
-                from .rag_memory import TraderMemoryAgent
-                memory_agent = TraderMemoryAgent(self.memory)
-                memory_data = memory_agent.analyze_with_memory(query, symbol)
-                memory_context = memory_data.get("memory_context", "")
+                try:
+                    if hasattr(self.memory, "recall_context"):
+                        memory_context = self.memory.recall_context(query, top_k=3, symbol=symbol) or ""
+                    else:
+                        from .rag_memory import TraderMemoryAgent
+                        memory_agent = TraderMemoryAgent(self.memory)
+                        memory_data = memory_agent.analyze_with_memory(query, symbol)
+                        memory_context = memory_data.get("memory_context", "")
+                except Exception as mem_err:
+                    logger.debug("memory context skipped: %s", mem_err)
             
             # Combine stock and memory context
             combined_context = stock_data_context + (f"\n\n{memory_context}" if memory_context else "")
             
-            # Get trader response based on intent
-            if "analyze" in intent or "what" in intent.lower() or "chart" in query.lower():
-                response = self._get_analysis(query, combined_context)
-            elif "trade" in intent or "buy" in intent or "sell" in intent:
-                response = self._get_trade_advice(query, combined_context)
-            elif "portfolio" in intent or "position" in intent:
-                response = self._get_portfolio_analysis(query, combined_context)
-            else:
-                response = self._get_general_response(query, combined_context)
+            # Tim engines first — AI narrates after gates fire
+            tim_decision = None
+            try:
+                from .tim_copilot import TimCopilot
+                tim = TimCopilot(trader=self.trader, paper_mode=True)
+                if symbol and ("analyze" in intent or "trade" in intent or "buy" in intent or "sell" in intent or "chart" in query.lower()):
+                    tim_reply = tim.chat(query)
+                    response = tim_reply.get("response") or ""
+                    tim_decision = tim_reply.get("decision")
+                elif "portfolio" in intent or "position" in intent or "risk" in query.lower():
+                    tim_reply = tim.chat(query if query else "show risk")
+                    response = tim_reply.get("response") or ""
+                else:
+                    response = None
+            except Exception as _tim_err:
+                logger.debug(f"TimCopilot fallback: {_tim_err}")
+                response = None
+
+            if not response:
+                if "analyze" in intent or "what" in intent.lower() or "chart" in query.lower():
+                    response = self._get_analysis(query, combined_context)
+                elif "trade" in intent or "buy" in intent or "sell" in intent:
+                    response = self._get_trade_advice(query, combined_context)
+                elif "portfolio" in intent or "position" in intent:
+                    response = self._get_portfolio_analysis(query, combined_context)
+                else:
+                    response = self._get_general_response(query, combined_context)
             
             # Store in memory if it's a significant query
             if self.memory and intent != "general":
@@ -134,6 +158,7 @@ class TraderChatAdapter:
                 "memory_context": memory_context,
                 "stock_data": stock_data,
                 "stock_symbol": symbol,
+                "tim_decision": tim_decision,
                 "timestamp": datetime.utcnow().isoformat()
             }
         

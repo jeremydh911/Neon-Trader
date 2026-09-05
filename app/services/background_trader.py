@@ -5,6 +5,7 @@ Runs as long as E*TRADE API is authenticated and enabled in settings
 """
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -50,6 +51,12 @@ class BackgroundTraderService:
             watchlist: Optional list of tickers or ["ALL"] for dynamic discovery
             update_callback: Optional callback function for UI updates
         """
+        import os
+        # Paper/test day: sandbox + no OAuth gate unless explicitly live
+        paper = os.getenv("PAPER_MODE", "").lower() in ("1", "true", "yes")
+        if paper:
+            use_sandbox = True
+
         self.autonomous_trader = autonomous_trader
         self.oauth_service = oauth_service
         self.pricing_service = pricing_service
@@ -108,6 +115,11 @@ class BackgroundTraderService:
         self.config.setdefault('require_oauth', True)
         # Allow bypass in tests or special cases
         self.config.setdefault('allow_start_without_oauth', False)
+        # Paper day: never block mock/sandbox start on missing OAuth
+        if self.use_sandbox and os.getenv("PAPER_MODE", "").lower() in ("1", "true", "yes"):
+            self.config["require_oauth"] = False
+            self.config["allow_start_without_oauth"] = True
+            logger.info("📄 PAPER_MODE: OAuth not required for sandbox start")
         # Popular US market tickers for ALL mode
         self.popular_tickers = self._get_popular_us_tickers()
         
@@ -327,7 +339,10 @@ class BackgroundTraderService:
                 self._research_phase()
                 research_time = time.time() - research_start
                 
-                # Phase 2: Evaluate and execute
+                # Phase 2: Manage open positions (stops / take-profit) before new entries
+                self._position_management_phase()
+
+                # Phase 3: Evaluate and execute
                 execution_start = time.time()
                 self._execution_phase()
                 execution_time = time.time() - execution_start
@@ -604,6 +619,26 @@ class BackgroundTraderService:
                         if not applied:
                             logger.warning(f"⚠️ Could not apply trade debit for {symbol} ${trade_cost:,.2f}")
 
+                    # Tim rule: every BUY gets a broker-backed stop + take-profit immediately
+                    if str(action).upper() in ("BUY", "DAY_TRADE", "SWING"):
+                        try:
+                            indicators = latest_research.get("technical_indicators") or latest_research.get("indicators") or {}
+                            self.autonomous_trader.open_position_with_stop_loss(
+                                symbol=symbol,
+                                entry_price=float(price),
+                                quantity=int(qty),
+                                stop_loss_percent=self.config.get("stop_loss_pct"),
+                                take_profit_percent=self.config.get("take_profit_pct"),
+                                indicators=indicators,
+                                place_broker_stop=True,
+                            )
+                            self._log_activity(
+                                "STOP_ARMED",
+                                f"{symbol}: protective stop + TP armed after fill"
+                            )
+                        except Exception as e:
+                            logger.error(f"❌ Failed to arm stop for {symbol}: {e}")
+
                     self._log_activity(
                         "TRADE_EXECUTED",
                         f"{symbol}: {action} {qty} share(s) @ ${price:.2f} (ID: {order_result.get('order_id')})"
@@ -614,21 +649,21 @@ class BackgroundTraderService:
                         self.update_callback({
                             "type": "TRADE_EXECUTED",
                             "symbol": symbol,
-                                "action": action,
-                                "quantity": qty,
+                            "action": action,
+                            "quantity": qty,
                             "price": price,
                             "order_id": order_result.get("order_id"),
                             "timestamp": now_utc_iso()
                         })
-                    else:
-                        logger.error(f"❌ Trade execution failed for {symbol}")
-                        self._log_activity("TRADE_FAILED", f"{symbol}: {action} execution failed")
-                        # Release reserved funds on failure
-                        if self.funding_service and reserved_amount > 0:
-                            try:
-                                self.funding_service.release_reserved(reserved_amount)
-                            except Exception:
-                                pass
+                else:
+                    logger.error(f"❌ Trade execution failed for {symbol}: {order_result}")
+                    self._log_activity("TRADE_FAILED", f"{symbol}: {action} execution failed")
+                    # Release reserved funds on failure
+                    if self.funding_service and reserved_amount > 0:
+                        try:
+                            self.funding_service.release_reserved(reserved_amount)
+                        except Exception:
+                            pass
             
             except Exception as e:
                 logger.error(f"❌ Error executing trade: {e}")
@@ -637,55 +672,70 @@ class BackgroundTraderService:
         except Exception as e:
             logger.error(f"❌ Execution phase error: {e}")
     
+    def _position_management_phase(self) -> None:
+        """Enforce stops / take-profits on open managed positions every cycle."""
+        try:
+            positions = {}
+            if hasattr(self.autonomous_trader, "get_positions_status"):
+                positions = self.autonomous_trader.get_positions_status() or {}
+            if not positions:
+                return
+
+            quotes: Dict[str, float] = {}
+            for symbol in positions.keys():
+                price = None
+                if self.pricing_service and hasattr(self.pricing_service, "get_quote"):
+                    try:
+                        q = self.pricing_service.get_quote(symbol) or {}
+                        price = q.get("price")
+                    except Exception:
+                        price = None
+                if price is None:
+                    # Fall back to last researched price
+                    for r in reversed(self.research_history):
+                        if r.get("symbol") == symbol and r.get("price"):
+                            price = r["price"]
+                            break
+                if price is not None:
+                    quotes[symbol] = float(price)
+
+            if not quotes:
+                return
+
+            results = self.autonomous_trader.manage_open_positions(quotes)
+            for r in results:
+                if r.get("exited"):
+                    self._log_activity("EXIT", f"{r.get('symbol')}: {r.get('message')}")
+                    self.daily_stats["trades_executed"] += 1
+        except Exception as e:
+            logger.error(f"❌ Position management error: {e}")
+
     def _analyze_and_determine_action(self, symbol: str, research: Dict, quote: Dict) -> str:
         """
-        Analyze research and determine trading action
-        Returns: BUY, SELL, SHORT, HOLD, SWING, DAY_TRADE
+        Momentum sniping only. No RSI dip-buys. No hope.
+        Returns: BUY, SELL, HOLD
         """
         try:
-            indicators = research.get("indicators", {})
-            confidence = research.get("confidence", 0)
-            
-            # Get technical indicators
-            sma_20 = indicators.get("sma_20", 0)
-            sma_50 = indicators.get("sma_50", 0)
-            sma_200 = indicators.get("sma_200", 0)
-            rsi = indicators.get("rsi", 50)
-            macd = indicators.get("macd", {})
-            price = quote.get("price", 0)
-            
-            # Trend analysis
-            short_term_trend = "UP" if price > sma_20 else "DOWN"
-            medium_term_trend = "UP" if sma_20 > sma_50 else "DOWN"
-            long_term_trend = "UP" if sma_50 > sma_200 else "DOWN"
-            
-            # Decision logic
-            if confidence < 40:
-                return "HOLD"
-            
-            # Strong uptrend - BUY
-            if (short_term_trend == "UP" and medium_term_trend == "UP" and 
-                rsi < 70 and confidence > 70):
-                return "BUY"
-            
-            # Strong downtrend - SELL or SHORT
-            if (short_term_trend == "DOWN" and medium_term_trend == "DOWN" and 
-                rsi > 30 and confidence > 70):
-                return "SELL"
-            
-            # Swing trade setup
-            if (long_term_trend == "UP" and short_term_trend == "DOWN" and 
-                rsi < 30 and confidence > 60):
-                return "SWING"
-            
-            # Day trade volatility
-            if (short_term_trend == "UP" and rsi > 50 and rsi < 70 and 
-                confidence > 50):
-                return "DAY_TRADE"
-            
-            # Default to HOLD
-            return "HOLD"
-        
+            try:
+                from .momentum_engine import evaluate_momentum_entry, MomentumConfig
+            except ImportError:
+                from app.services.momentum_engine import evaluate_momentum_entry, MomentumConfig
+
+            indicators = dict(research.get("indicators") or {})
+            price = float(quote.get("price") or research.get("price") or 0)
+            if research.get("action_hint") in ("BUY", "SELL", "HOLD") and research.get("confidence", 0) >= 55:
+                # Trust perform_research when it already ran the momentum engine
+                hint = research["action_hint"]
+                if hint == "BUY":
+                    return "BUY"
+                if hint == "SELL":
+                    return "SELL"
+
+            action, confidence, reason = evaluate_momentum_entry(
+                price, indicators, MomentumConfig()
+            )
+            logger.info(f"📈 {symbol} momentum -> {action} ({confidence:.2f}): {reason}")
+            return action
         except Exception as e:
             logger.error(f"❌ Error analyzing {symbol}: {e}")
             return "HOLD"

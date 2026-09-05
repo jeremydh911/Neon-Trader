@@ -34,6 +34,8 @@ class StopLossConfig:
     enforce_hard_stops: bool = True            # Forcefully exit at stop
     alert_on_breach: bool = True               # Alert before exiting
     emergency_stop_loss: float = 3.0           # Emergency stop if offline
+    default_take_profit_percent: float = 3.0   # Bank winners
+    atr_multiplier: float = 1.5                # For ATR_BASED strategy
 
 
 @dataclass
@@ -48,25 +50,42 @@ class Position:
     initial_stop_loss: float
     trailing_high: Optional[float] = None
     trailing_stop: Optional[float] = None
-    status: str = "open"  # open, stopped_out, closed
+    take_profit_price: Optional[float] = None
+    take_profit_percent: Optional[float] = None
+    broker_stop_order_id: Optional[str] = None
+    status: str = "open"  # open, stopped_out, take_profit, closed
     
     def get_current_loss_percent(self, current_price: float) -> float:
         """Calculate current loss percentage"""
         if self.entry_price == 0:
             return 0.0
         return ((current_price - self.entry_price) / self.entry_price) * 100
+
+    def effective_stop(self) -> float:
+        """Tightest long stop: never looser than the initial hard stop."""
+        stops = [self.stop_loss_price, self.initial_stop_loss]
+        if self.trailing_stop is not None:
+            stops.append(self.trailing_stop)
+        return max(s for s in stops if s is not None)
     
     def is_stop_triggered(self, current_price: float) -> bool:
         """Check if stop loss is triggered"""
-        if self.trailing_stop:
-            return current_price <= self.trailing_stop
-        return current_price <= self.stop_loss_price
+        return current_price <= self.effective_stop()
+
+    def is_take_profit_triggered(self, current_price: float) -> bool:
+        """Check if take profit is hit"""
+        if self.take_profit_price is None:
+            return False
+        return current_price >= self.take_profit_price
     
     def update_trailing_stop(self, current_price: float, trailing_percent: float):
-        """Update trailing stop loss"""
+        """Ratchet trailing stop up only; never below initial hard stop."""
         if self.trailing_high is None or current_price > self.trailing_high:
             self.trailing_high = current_price
-            self.trailing_stop = current_price * (1 - trailing_percent / 100)
+            candidate = current_price * (1 - trailing_percent / 100)
+            # Never loosen protection below the original stop
+            floor = max(self.initial_stop_loss, self.stop_loss_price)
+            self.trailing_stop = max(candidate, floor)
 
 
 class StopLossManager:
@@ -93,10 +112,13 @@ class StopLossManager:
         entry_price: float,
         quantity: int,
         stop_loss_percent: Optional[float] = None,
-        stop_loss_price: Optional[float] = None
+        stop_loss_price: Optional[float] = None,
+        take_profit_percent: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        atr: Optional[float] = None,
     ) -> Position:
         """
-        Open a new position with stop loss protection
+        Open a new position with stop loss + take profit protection
         
         Args:
             symbol: Stock symbol
@@ -104,6 +126,9 @@ class StopLossManager:
             quantity: Number of shares
             stop_loss_percent: Stop loss as percentage (override default)
             stop_loss_price: Explicit stop loss price (overrides percent)
+            take_profit_percent: Take profit as percentage
+            take_profit_price: Explicit take profit price
+            atr: Optional ATR for ATR_BASED strategy
             
         Returns:
             Position object
@@ -112,12 +137,24 @@ class StopLossManager:
         # Determine stop loss level
         if stop_loss_price:
             sl_price = stop_loss_price
+            sl_percent = abs((sl_price - entry_price) / entry_price) * 100 if entry_price else 0
+        elif self.config.strategy == StopLossStrategy.ATR_BASED and atr and atr > 0 and entry_price > 0:
+            sl_price = entry_price - (atr * self.config.atr_multiplier)
             sl_percent = abs((sl_price - entry_price) / entry_price) * 100
+            sl_percent = max(self.config.min_percent, min(sl_percent, self.config.max_percent))
+            sl_price = entry_price * (1 - sl_percent / 100)
         else:
             sl_percent = stop_loss_percent or self.config.default_percent
             # Enforce min/max constraints
             sl_percent = max(self.config.min_percent, min(sl_percent, self.config.max_percent))
             sl_price = entry_price * (1 - sl_percent / 100)
+
+        if take_profit_price is not None:
+            tp_price = take_profit_price
+            tp_percent = abs((tp_price - entry_price) / entry_price) * 100 if entry_price else None
+        else:
+            tp_percent = take_profit_percent if take_profit_percent is not None else self.config.default_take_profit_percent
+            tp_price = entry_price * (1 + tp_percent / 100) if tp_percent else None
         
         position = Position(
             symbol=symbol,
@@ -126,14 +163,17 @@ class StopLossManager:
             quantity=quantity,
             stop_loss_price=sl_price,
             stop_loss_percent=sl_percent,
-            initial_stop_loss=sl_price
+            initial_stop_loss=sl_price,
+            take_profit_price=tp_price,
+            take_profit_percent=tp_percent,
         )
         
         self.positions[symbol] = position
         
+        tp_str = f", TP={tp_price:.2f}" if tp_price else ""
         logger.info(
             f"Opened {symbol} position: Entry={entry_price:.2f}, "
-            f"Stop Loss={sl_price:.2f} ({sl_percent:.2f}%)"
+            f"Stop Loss={sl_price:.2f} ({sl_percent:.2f}%){tp_str}"
         )
         
         return position
@@ -144,14 +184,14 @@ class StopLossManager:
         current_price: float
     ) -> Tuple[bool, Optional[str]]:
         """
-        Update position with current price and check for stop loss
+        Update position with current price and check for stop loss / take profit
         
         Args:
             symbol: Stock symbol
             current_price: Current market price
             
         Returns:
-            Tuple of (is_stopped_out, message)
+            Tuple of (should_exit, message)
         """
         
         if symbol not in self.positions:
@@ -159,13 +199,26 @@ class StopLossManager:
         
         position = self.positions[symbol]
         
-        # Update trailing stop if enabled
-        if self.config.use_trailing and position.trailing_high is None:
-            position.trailing_high = current_price
-            position.trailing_stop = current_price * (1 - self.config.trailing_percent / 100)
-        elif self.config.use_trailing and position.trailing_high:
-            position.update_trailing_stop(current_price, self.config.trailing_percent)
+        # Emergency hard stop (offline / gap protection)
+        if self.config.enforce_hard_stops and position.entry_price > 0:
+            emergency_price = position.entry_price * (1 - self.config.emergency_stop_loss / 100)
+            if current_price <= emergency_price:
+                return self._trigger_stop_loss(position, current_price, reason="EMERGENCY_STOP")
+
+        # Update trailing stop if enabled — only ratchet after price is at/above entry
+        if self.config.use_trailing:
+            if current_price >= position.entry_price:
+                if position.trailing_high is None:
+                    position.trailing_high = current_price
+                    candidate = current_price * (1 - self.config.trailing_percent / 100)
+                    position.trailing_stop = max(candidate, position.initial_stop_loss)
+                else:
+                    position.update_trailing_stop(current_price, self.config.trailing_percent)
         
+        # Take profit first (bank the gain)
+        if position.is_take_profit_triggered(current_price):
+            return self._trigger_take_profit(position, current_price)
+
         # Check if stop loss triggered
         if position.is_stop_triggered(current_price):
             return self._trigger_stop_loss(position, current_price)
@@ -182,16 +235,17 @@ class StopLossManager:
     def _trigger_stop_loss(
         self,
         position: Position,
-        exit_price: float
+        exit_price: float,
+        reason: str = "STOP_LOSS",
     ) -> Tuple[bool, str]:
-        """Trigger stop loss exit"""
+        """Trigger stop loss exit — caller must place the broker sell."""
         
         position.status = "stopped_out"
         pnl = (exit_price - position.entry_price) * position.quantity
         loss_percent = position.get_current_loss_percent(exit_price)
         
         message = (
-            f"🛑 STOP LOSS TRIGGERED for {position.symbol}\n"
+            f"🛑 {reason} TRIGGERED for {position.symbol}\n"
             f"Entry: ${position.entry_price:.2f}\n"
             f"Exit: ${exit_price:.2f}\n"
             f"Loss: {loss_percent:.2f}% (${pnl:.2f})"
@@ -202,6 +256,26 @@ class StopLossManager:
         
         logger.warning(message)
         
+        return True, message
+
+    def _trigger_take_profit(
+        self,
+        position: Position,
+        exit_price: float,
+    ) -> Tuple[bool, str]:
+        """Trigger take profit exit — caller must place the broker sell."""
+        position.status = "take_profit"
+        pnl = (exit_price - position.entry_price) * position.quantity
+        pnl_percent = position.get_current_loss_percent(exit_price)
+        message = (
+            f"🎯 TAKE PROFIT for {position.symbol}\n"
+            f"Entry: ${position.entry_price:.2f}\n"
+            f"Exit: ${exit_price:.2f}\n"
+            f"Gain: {pnl_percent:.2f}% (${pnl:.2f})"
+        )
+        self.stopped_out_positions.append(position)
+        del self.positions[position.symbol]
+        logger.info(message)
         return True, message
     
     def _create_alert(
@@ -328,9 +402,13 @@ class StopLossManager:
             "entry_price": position.entry_price,
             "stop_loss_price": position.stop_loss_price,
             "stop_loss_percent": position.stop_loss_percent,
+            "take_profit_price": position.take_profit_price,
+            "take_profit_percent": position.take_profit_percent,
             "quantity": position.quantity,
             "entry_time": position.entry_time.isoformat(),
             "trailing_stop": position.trailing_stop,
+            "effective_stop": position.effective_stop(),
+            "broker_stop_order_id": position.broker_stop_order_id,
             "status": position.status
         }
     

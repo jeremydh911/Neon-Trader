@@ -27,6 +27,16 @@ CouncilOrchestrator
         └─ Online learner trained
 ```
 
+## Test Today (Paper / Mock)
+
+One command — no live capital:
+
+```bash
+./scripts/run_paper_test_today.sh
+```
+
+See [docs/TEST_TODAY.md](docs/TEST_TODAY.md). Keep `PAPER_MODE=1` and `USE_MOCK_BROKER=1`.
+
 ## Quick Start
 
 ### Local Setup (No Docker)

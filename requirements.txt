@@ -29,3 +29,6 @@ opentelemetry-instrumentation
 
 # Test
 pytest
+
+# AhanaVoice .aarm packs
+zstandard

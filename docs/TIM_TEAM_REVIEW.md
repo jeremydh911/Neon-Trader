@@ -47,6 +47,13 @@ Audience: desk eng + risk + product. Goal: Tim stays a **momentum sniper with ha
 - [ ] Tim still refuses RSI dip-buy framing in UX copy
 - [ ] Paper/mock flags remain default-on in examples
 
+## Voice (AhanaVoice / Jeremiah)
+
+- Vendored pack: `vendor/ahanavoice/jeremiah-av-experts-cpu.aarm` (50,950 B)
+- Tim default seat: `drew-three-am` (aliases `tim`, `jeremiah`)
+- Cockpit **Speak (AhanaVoice)** → serve_aarm / cloud / desk-preview
+- See `docs/AHANAVOICE_TIM.md`
+
 ## Happy Tim definition (working)
 
 Tim is happy when:

@@ -220,3 +220,7 @@ This is a demonstration project. Use responsibly and never enable autonomous tra
 ---
 
 **Status**: Beta (Dec 2025). All core features implemented. Ready for testing and integration with live brokers.
+
+### AhanaVoice (Tim narration)
+
+Tim speaks through Jeremiah’s vendored AhanaVoice pack. See `docs/AHANAVOICE_TIM.md`.

@@ -368,6 +368,37 @@ def render_tim_cockpit(funding_service=None, oauth_status: Optional[Dict] = None
                 st.session_state.tim_decision = None
                 st.rerun()
 
+        # AhanaVoice — Jeremiah's tiny mastered pack (~16KB seats)
+        speak_src = ""
+        if decision:
+            speak_src = (decision.get("narration") or decision.get("reason") or "").strip()
+        if not speak_src and st.session_state.tim_chat:
+            for turn in reversed(st.session_state.tim_chat):
+                if turn.get("role") == "tim" and turn.get("text"):
+                    speak_src = str(turn["text"]).strip()
+                    break
+        s1, s2 = st.columns([1.2, 2])
+        with s1:
+            speak_clicked = st.button(
+                "🎙 Speak (AhanaVoice)",
+                use_container_width=True,
+                disabled=not bool(speak_src),
+                help="Jeremiah's AhanaVoice pack — drew-three-am seat by default.",
+            )
+        with s2:
+            st.caption("16KB .aarm seats · pack borrowed from AhanaVoice · engines still decide")
+        if speak_clicked and speak_src:
+            with st.spinner("Tim speaking…"):
+                spoken = copilot.speak(speak_src)
+            if spoken.get("status") == "success" and spoken.get("audio"):
+                st.audio(spoken["audio"], format=spoken.get("content_type") or "audio/wav")
+                st.caption(
+                    f"mode **{spoken.get('mode')}** · slot **{spoken.get('slot')}** · "
+                    f"pack **{spoken.get('pack_bytes', 0)}** B"
+                )
+            else:
+                st.warning(spoken.get("message") or "AhanaVoice quiet")
+
         if decision and decision.get("demo"):
             st.caption("Demo tape active — live quotes offline. Gates still enforce Tim’s rules.")
 

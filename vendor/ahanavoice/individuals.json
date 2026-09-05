@@ -1,0 +1,20 @@
+{
+  "brand": "AhanaVoice",
+  "honest": "You download this roster plus a ~16KB .aarm speaker profile per seat. Plug the slot id into any LLM that can POST OpenAI-style /v1/audio/speech. This page previews in the browser with Web Speech using that seat's pitch and line. Not a 7B. Not a celebrity. Not llama. Same prices as LucaVoice.",
+  "sku": {"one": "$14.99", "two": "$9.99", "three": "$24.99"},
+  "plug": "POST {\"model\":\"ahanavoice\",\"voice\":\"<slot>\",\"input\":\"<text>\"} to packed TTS.",
+  "individuals": [
+    {"slot":"riley-admin","name":"Riley Admin","gender":"female","pitch":1.12,"rate":1.02,"face":"/faces/riley-admin.svg","bio":"Runs the group. Hates the group. Stays anyway.","line":"I made the chat. I can mute it. Packed admin.","plug":"voice=riley-admin"},
+    {"slot":"jordan-delivered","name":"Jordan Delivered","gender":"male","pitch":0.92,"rate":0.98,"face":"/faces/jordan-delivered.svg","bio":"Blue checks. No reply. Lives there.","line":"Delivered. I'm not ghosting. I'm budgeting words.","plug":"voice=jordan-delivered"},
+    {"slot":"avery-unsent","name":"Avery Unsent","gender":"female","pitch":1.08,"rate":0.94,"face":"/faces/avery-unsent.svg","bio":"Wrote the paragraph. Held delete.","line":"I unsent it. You still heard the version I packed.","plug":"voice=avery-unsent"},
+    {"slot":"quinn-ticket","name":"Quinn Ticket","gender":"male","pitch":0.88,"rate":0.96,"face":"/faces/quinn-ticket.svg","bio":"Always has a reason. Usually a ticket.","line":"I would have been there. I got a ticket. It's in the pack.","plug":"voice=quinn-ticket"},
+    {"slot":"cameron-third-read","name":"Cameron Third Read","gender":"male","pitch":1.0,"rate":1.0,"face":"/faces/cameron-third-read.svg","bio":"Reads it three times. Sends a thumbs up.","line":"Third read. Still a thumbs up. That's the whole personality.","plug":"voice=cameron-third-read"},
+    {"slot":"harper-need-to-talk","name":"Harper Need To Talk","gender":"female","pitch":1.15,"rate":1.04,"face":"/faces/harper-need-to-talk.svg","bio":"The text that ruins a Saturday. Soft voice. Hard news.","line":"We need to talk. It's packed. It's not a meeting.","plug":"voice=harper-need-to-talk"},
+    {"slot":"reese-calendar","name":"Reese Calendar","gender":"female","pitch":1.05,"rate":1.06,"face":"/faces/reese-calendar.svg","bio":"If it isn't on the calendar it isn't real.","line":"Put it on the calendar or it didn't happen. I packed the reminder.","plug":"voice=reese-calendar"},
+    {"slot":"drew-three-am","name":"Drew Three AM","gender":"male","pitch":0.84,"rate":0.9,"face":"/faces/drew-three-am.svg","bio":"Philosophy at 3am. Meetings at noon. Only one is honest.","line":"It's three a.m. This is the true version. Tiny pack.","plug":"voice=drew-three-am"},
+    {"slot":"blake-drafts","name":"Blake Drafts","gender":"male","pitch":0.93,"rate":0.97,"face":"/faces/blake-drafts.svg","bio":"Lives in drafts. Publishes never. Speaks anyway.","line":"Still a draft. You're hearing folder zero.","plug":"voice=blake-drafts"},
+    {"slot":"rowan-mute","name":"Rowan Mute","gender":"female","pitch":1.0,"rate":0.92,"face":"/faces/rowan-mute.svg","bio":"The mute button with a face.","line":"I muted you for both our sakes. Click again if you must.","plug":"voice=rowan-mute"},
+    {"slot":"skyler-almost","name":"Skyler Almost","gender":"female","pitch":1.18,"rate":1.08,"face":"/faces/skyler-almost.svg","bio":"Almost replied. Almost came. Almost packed a novel.","line":"I almost sent it. This is the almost. Sixteen kilobytes.","plug":"voice=skyler-almost"},
+    {"slot":"casey-screenshot","name":"Casey Screenshot","gender":"male","pitch":0.96,"rate":1.03,"face":"/faces/casey-screenshot.svg","bio":"If it happened, Casey has the image.","line":"I screenshotted it. Not petty. Archive. Packed.","plug":"voice=casey-screenshot"}
+  ]
+}

@@ -468,5 +468,22 @@ class TimCopilot:
         }
 
 
+    def speak(self, text: str, *, slot: Optional[str] = None) -> Dict[str, Any]:
+        """Narrate through Jeremiah's AhanaVoice tiny pack (~16KB seats)."""
+        try:
+            from .ahanavoice_client import speak_tim
+
+            result = speak_tim(text, slot=slot)
+            return {
+                "status": "success",
+                "audio": result.audio,
+                "content_type": result.content_type,
+                **result.as_dict(),
+            }
+        except Exception as exc:
+            logger.warning("Tim speak failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+
+
 def get_tim_copilot(funding_service=None) -> TimCopilot:
     return TimCopilot(funding_service=funding_service, paper_mode=True)

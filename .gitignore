@@ -25,6 +25,8 @@ data/*.db
 data/*.db-journal
 data/*.sqlite*
 data/*.sqlite3*
+data/ahanaflow/
+data/ahanaflow/**
 app/data/
 app/data/**
 

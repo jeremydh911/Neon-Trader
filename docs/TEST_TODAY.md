@@ -73,15 +73,32 @@ Engines decide. AI narrates. Council stays secondary.
 
 ## AhanaFlow compressed RAG memory
 
-Neon Trader vendors [AhanaFlow](https://www.ahanaflow.com) (`vendor/AhanaFlow`) for Tim’s memory:
+Neon Trader vendors [AhanaFlow](https://www.ahanaflow.com) (`vendor/AhanaFlow`) for Tim’s memory.
+
+**Preferred for this site: self-hosted** (trade memory stays on your box). Grok’s cloud API backend can plug in later as `AHANAFLOW_MODE=remote`.
 
 ```bash
 git submodule update --init --recursive vendor/AhanaFlow
-export AHANAFLOW_MEMORY=1
+
+# Self-hosted vector server (recommended)
+./scripts/run_ahanaflow_selfhost.sh
+# other terminal:
+export AHANAFLOW_MEMORY=1 AHANAFLOW_MODE=selfhosted
+export AHANAFLOW_HOST=127.0.0.1 AHANAFLOW_PORT=9634
+
+# Or embedded in-process (no separate daemon)
+export AHANAFLOW_MODE=embedded
 export AHANAFLOW_WAL=./data/ahanaflow/tim_memory.wal
 ```
 
-- Decisions + paper snipes are upserted into `VectorStateEngineV2`
-- Recall uses `compress_results=True` (compressed RAG context windows)
+| Mode | When |
+|------|------|
+| `selfhosted` | Local `VectorStateServerV2` TCP (default recommendation) |
+| `embedded` | In-process engine, no daemon |
+| `auto` | Try selfhosted → fall back to embedded |
+| `remote` | Reserved for cloud API once Grok’s backend is live |
+
+- Decisions + paper snipes upsert into AhanaFlow vectors
+- Recall uses `compress_results=True` (compressed RAG windows)
 - `AHANAFLOW_MEMORY=0` forces the legacy JSON/pickle store
-- Cockpit risk strip shows **Memory · AHANA · N** vector count
+- Cockpit risk strip shows **Memory · AHANA · N**

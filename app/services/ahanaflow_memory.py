@@ -1,9 +1,12 @@
 """
 AhanaFlow compressed RAG memory for Neon Trader / Tim.
 
-Uses AhanaFlow VectorStateEngineV2 (vendor/AhanaFlow) for compression-native
-vector storage + retrieval. Falls back to the legacy RAGMemoryStore if the
-engine cannot be imported.
+Modes (AHANAFLOW_MODE):
+  selfhosted  — TCP client → local VectorStateServerV2 (preferred for Neon Trader)
+  embedded    — in-process VectorStateEngineV2 from vendor/AhanaFlow
+  auto        — try selfhosted, fall back to embedded (default)
+
+Remote cloud API (Grok build) can plug in later as AHANAFLOW_MODE=remote.
 
 Docs: https://www.ahanaflow.com  ·  https://github.com/AhanaAi-Company/AhanaFlow
 """
@@ -64,6 +67,7 @@ def _decode_payload(payload: Any) -> Any:
     if not data_b64:
         return payload
     try:
+        _ensure_ahanaflow_path()
         from backend.vector_server.codec import decompress  # type: ignore
 
         raw = decompress(base64.b64decode(data_b64))
@@ -83,11 +87,23 @@ def _payload_text(payload: Any) -> str:
     return str(decoded or "")
 
 
+def _resolve_mode() -> str:
+    mode = (os.getenv("AHANAFLOW_MODE") or "auto").strip().lower()
+    if mode in ("server", "local", "self-hosted", "self_hosted"):
+        return "selfhosted"
+    if mode in ("inprocess", "in-process", "embed"):
+        return "embedded"
+    if mode in ("cloud", "api"):
+        return "remote"
+    return mode if mode in ("selfhosted", "embedded", "auto", "remote") else "auto"
+
+
 class AhanaFlowMemory:
     """
-    Compression-native RAG memory backed by AhanaFlow VectorStateEngineV2.
+    Compression-native RAG memory.
 
-    Duck-types enough of RAGMemoryStore for TraderMemoryAgent / chat / Tim.
+    Preferred: self-hosted AhanaFlow vector server (data stays on your box).
+    Fallback: embedded VectorStateEngineV2 from vendor/.
     """
 
     def __init__(
@@ -95,7 +111,76 @@ class AhanaFlowMemory:
         wal_path: Optional[Union[str, Path]] = None,
         collection: str = TIM_COLLECTION,
         dimensions: int = TIM_DIM,
+        mode: Optional[str] = None,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
     ) -> None:
+        self.collection = collection
+        self.dimensions = dimensions
+        self.engine = None
+        self.client = None
+        self._backend = "ahanaflow"
+
+        chosen = (mode or _resolve_mode()).lower()
+        if chosen in ("server", "local", "self-hosted", "self_hosted"):
+            chosen = "selfhosted"
+        if chosen in ("inprocess", "embed"):
+            chosen = "embedded"
+
+        errors: List[str] = []
+
+        if chosen in ("selfhosted", "auto"):
+            try:
+                self._init_selfhosted(host=host, port=port)
+                return
+            except Exception as e:
+                errors.append(f"selfhosted: {e}")
+                if chosen == "selfhosted":
+                    raise
+                logger.info("AhanaFlow selfhosted unavailable (%s) — trying embedded", e)
+
+        if chosen in ("embedded", "auto"):
+            try:
+                self._init_embedded(wal_path=wal_path)
+                return
+            except Exception as e:
+                errors.append(f"embedded: {e}")
+                if chosen == "embedded":
+                    raise
+
+        if chosen == "remote":
+            raise NotImplementedError(
+                "AHANAFLOW_MODE=remote awaits the cloud API backend. "
+                "Use selfhosted or embedded until then."
+            )
+
+        raise ImportError(
+            "AhanaFlow memory could not start. Tried: " + "; ".join(errors)
+        )
+
+    def _init_selfhosted(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
+        from .ahanaflow_vector_client import AhanaFlowVectorClient
+
+        self.client = AhanaFlowVectorClient(
+            host=host or os.getenv("AHANAFLOW_HOST", "127.0.0.1"),
+            port=int(port or os.getenv("AHANAFLOW_PORT", "9634")),
+        )
+        self.client.ping()
+        try:
+            self.client.create_collection(self.collection, self.dimensions, metric="cosine")
+        except Exception:
+            # collection may already exist
+            pass
+        self._backend = "ahanaflow-selfhosted"
+        logger.info(
+            "AhanaFlow memory ready mode=selfhosted collection=%s dim=%s %s:%s",
+            self.collection,
+            self.dimensions,
+            self.client.host,
+            self.client.port,
+        )
+
+    def _init_embedded(self, wal_path: Optional[Union[str, Path]] = None) -> None:
         if not _ensure_ahanaflow_path():
             raise ImportError(
                 f"AhanaFlow vendor missing at {AHANAFLOW_ROOT}. "
@@ -106,19 +191,95 @@ class AhanaFlowMemory:
         root = Path(wal_path or os.getenv("AHANAFLOW_WAL", "./data/ahanaflow/tim_memory.wal"))
         root.parent.mkdir(parents=True, exist_ok=True)
         self.engine = VectorStateEngineV2(root)
-        self.collection = collection
-        self.dimensions = dimensions
-        self._backend = "ahanaflow"
         try:
-            self.engine.create_collection(collection, dimensions, metric="cosine")
+            self.engine.create_collection(self.collection, self.dimensions, metric="cosine")
         except ValueError:
             pass
+        self._backend = "ahanaflow-embedded"
         logger.info(
-            "AhanaFlow memory ready collection=%s dim=%s wal=%s",
-            collection,
-            dimensions,
+            "AhanaFlow memory ready mode=embedded collection=%s dim=%s wal=%s",
+            self.collection,
+            self.dimensions,
             root,
         )
+
+    # --- backend ops ---
+
+    def _upsert(
+        self,
+        mid: str,
+        vector: List[float],
+        meta: Dict[str, Any],
+        payload: Dict[str, Any],
+        ttl_seconds: Optional[int],
+    ) -> None:
+        if self.client is not None:
+            self.client.upsert(
+                self.collection,
+                mid,
+                vector,
+                metadata=meta,
+                payload=payload,
+                ttl_seconds=ttl_seconds,
+            )
+            return
+        assert self.engine is not None
+        self.engine.upsert(
+            self.collection,
+            mid,
+            vector,
+            metadata=meta,
+            payload=payload,
+            ttl_seconds=ttl_seconds,
+        )
+
+    def _query(
+        self,
+        vector: List[float],
+        top_k: int,
+        compress: bool,
+    ) -> List[Dict[str, Any]]:
+        if self.client is not None:
+            raw = self.client.query(
+                self.collection,
+                vector,
+                top_k=top_k,
+                compress_results=compress,
+                strategy="exact",
+            )
+        else:
+            assert self.engine is not None
+            raw = self.engine.query(
+                self.collection,
+                vector,
+                top_k=top_k,
+                filters=None,
+                compress_results=compress,
+                strategy="exact",
+            )
+        if isinstance(raw, dict):
+            return list(raw.get("hits") or raw.get("results") or [])
+        return list(raw or [])
+
+    def _scan(self, limit: int) -> List[Dict[str, Any]]:
+        if self.client is not None:
+            return self.client.scan(self.collection, limit=limit)
+        assert self.engine is not None
+        return self.engine.scan(self.collection, limit=limit)
+
+    def _stats_raw(self) -> Dict[str, Any]:
+        if self.client is not None:
+            return self.client.stats()
+        assert self.engine is not None
+        s = self.engine.stats()
+        return {
+            "collections": getattr(s, "collections", None),
+            "vectors": getattr(s, "vectors", None),
+            "wal_size_bytes": getattr(s, "wal_size_bytes", None),
+            "records_replayed": getattr(s, "records_replayed", None),
+        }
+
+    # --- write ---
 
     def remember(
         self,
@@ -147,14 +308,7 @@ class AhanaFlowMemory:
             meta["council_votes"] = council_votes
         meta = {k: v for k, v in meta.items() if v is not None}
         vector = _hash_embed(content, self.dimensions)
-        self.engine.upsert(
-            self.collection,
-            mid,
-            vector,
-            metadata=meta,
-            payload={"text": content, "kind": kind},
-            ttl_seconds=ttl_seconds,
-        )
+        self._upsert(mid, vector, meta, {"text": content, "kind": kind}, ttl_seconds)
         return mid
 
     def add_discussion(
@@ -222,6 +376,8 @@ class AhanaFlowMemory:
             },
         )
 
+    # --- read ---
+
     def _hit_to_entry(self, h: Dict[str, Any], score: Optional[float] = None):
         from .rag_memory import MemoryEntry
 
@@ -255,15 +411,11 @@ class AhanaFlowMemory:
         k = int(top_k or limit or 5)
         mt = kind or memory_type
         vector = _hash_embed(query, self.dimensions)
-        raw = self.engine.query(
-            self.collection,
+        hits = self._query(
             vector,
             top_k=max(k * 3, k) if time_limit or symbol or mt else k,
-            filters=None,
-            compress_results=compress,
-            strategy="exact",
+            compress=compress,
         )
-        hits = raw.get("hits") if isinstance(raw, dict) else (raw or [])
         cutoff = None
         if time_limit:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=time_limit)).isoformat()
@@ -284,7 +436,7 @@ class AhanaFlowMemory:
         return out
 
     def search_by_tags(self, tags: List[str], limit: int = 20) -> List[Any]:
-        rows = self.engine.scan(self.collection, limit=max(limit * 5, 50))
+        rows = self._scan(max(limit * 5, 50))
         tagset = set(tags or [])
         matched = []
         for row in rows:
@@ -297,7 +449,7 @@ class AhanaFlowMemory:
         return matched
 
     def get_recent_decisions(self, limit: int = 5) -> List[Any]:
-        rows = self.engine.scan(self.collection, limit=max(limit * 10, 50))
+        rows = self._scan(max(limit * 10, 50))
         decisions = [
             self._hit_to_entry(r, score=1.0)
             for r in rows
@@ -307,7 +459,7 @@ class AhanaFlowMemory:
         return decisions[:limit]
 
     def get_successful_trades(self, symbol: Optional[str] = None) -> List[Any]:
-        rows = self.engine.scan(self.collection, limit=500)
+        rows = self._scan(500)
         out = []
         for r in rows:
             meta = r.get("metadata") or {}
@@ -319,7 +471,7 @@ class AhanaFlowMemory:
         return out
 
     def get_failed_trades(self, symbol: Optional[str] = None) -> List[Any]:
-        rows = self.engine.scan(self.collection, limit=500)
+        rows = self._scan(500)
         out = []
         for r in rows:
             meta = r.get("metadata") or {}
@@ -331,7 +483,7 @@ class AhanaFlowMemory:
         return out
 
     def get_symbol_history(self, symbol: str) -> Dict[str, Any]:
-        rows = self.engine.scan(self.collection, limit=500)
+        rows = self._scan(500)
         trades = []
         for r in rows:
             meta = r.get("metadata") or {}
@@ -362,7 +514,7 @@ class AhanaFlowMemory:
 
     def get_memory_summary(self) -> Dict[str, Any]:
         s = self.stats()
-        rows = self.engine.scan(self.collection, limit=2000)
+        rows = self._scan(2000)
         kinds = {"discussion": 0, "decision": 0, "trade_result": 0, "note": 0}
         stamps = []
         for r in rows:
@@ -378,36 +530,37 @@ class AhanaFlowMemory:
             "trades": kinds.get("trade_result", 0),
             "oldest_memory": min(stamps) if stamps else None,
             "newest_memory": max(stamps) if stamps else None,
-            "backend": "ahanaflow",
+            "backend": self._backend,
             "vectors": s.get("vectors"),
             "wal_size_bytes": s.get("wal_size_bytes"),
         }
 
     def stats(self) -> Dict[str, Any]:
         try:
-            s = self.engine.stats()
-            data = {
-                "collections": getattr(s, "collections", None),
-                "vectors": getattr(s, "vectors", None),
-                "wal_size_bytes": getattr(s, "wal_size_bytes", None),
-                "records_replayed": getattr(s, "records_replayed", None),
-            }
+            data = dict(self._stats_raw())
         except Exception as e:
             data = {"error": str(e)}
         data["backend"] = self._backend
         data["collection"] = self.collection
         data["dimensions"] = self.dimensions
+        data["mode"] = "selfhosted" if self.client else "embedded"
         return data
 
     def get_memory_stats(self) -> Dict[str, Any]:
         return self.stats()
 
     def close(self) -> None:
-        try:
-            self.engine.flush()
-            self.engine.close()
-        except Exception:
-            pass
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        if self.engine is not None:
+            try:
+                self.engine.flush()
+                self.engine.close()
+            except Exception:
+                pass
 
 
 _STORE: Optional[Any] = None

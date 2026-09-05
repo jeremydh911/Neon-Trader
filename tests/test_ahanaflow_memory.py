@@ -26,7 +26,7 @@ def test_ahanaflow_remember_and_recall():
     from app.services.ahanaflow_memory import AhanaFlowMemory
 
     wal = Path(tempfile.mkdtemp()) / "tim_test.wal"
-    mem = AhanaFlowMemory(wal_path=wal, collection="tim_test", dimensions=64)
+    mem = AhanaFlowMemory(wal_path=wal, collection="tim_test", dimensions=64, mode="embedded")
     mid = mem.remember(
         "BUY NVDA on VWAP reclaim with stacked RVOL",
         kind="decision",
@@ -51,7 +51,8 @@ def test_ahanaflow_remember_and_recall():
     assert "NVDA" in ctx
 
     stats = mem.stats()
-    assert stats["backend"] == "ahanaflow"
+    assert "ahanaflow" in str(stats.get("backend") or "")
+    assert stats.get("mode") == "embedded"
     assert stats["vectors"] >= 2
     mem.close()
 
@@ -61,11 +62,12 @@ def test_get_memory_store_prefers_ahanaflow():
 
     af._STORE = None
     os.environ["AHANAFLOW_WAL"] = str(Path(tempfile.mkdtemp()) / "factory.wal")
+    os.environ["AHANAFLOW_MODE"] = "embedded"
     store = af.get_memory_store()
     assert type(store).__name__ == "AhanaFlowMemory"
     store.remember("paper snipe lesson: hard stop never softens", kind="note", tags=["tim"])
     summary = store.get_memory_summary()
-    assert summary["backend"] == "ahanaflow"
+    assert "ahanaflow" in str(summary.get("backend") or "")
     assert summary["total_memories"] >= 1
 
 
@@ -74,12 +76,43 @@ def test_tim_copilot_writes_memory():
     from app.services.tim_copilot import TimCopilot
 
     wal = Path(tempfile.mkdtemp()) / "copilot.wal"
-    mem = AhanaFlowMemory(wal_path=wal, collection="tim_copilot", dimensions=64)
+    mem = AhanaFlowMemory(wal_path=wal, collection="tim_copilot", dimensions=64, mode="embedded")
     c = TimCopilot(paper_mode=True, memory=mem)
     d = c.analyze("NVDA")
     assert d["status"] == "success"
     hits = mem.search(f"{d.get('action')} NVDA", limit=5)
     assert hits
     strip = c.risk_strip()
-    assert strip.get("memory_backend") == "ahanaflow"
+    assert "ahanaflow" in str(strip.get("memory_backend") or "")
     assert strip.get("memory_vectors", 0) >= 1
+
+
+def test_selfhosted_ahanaflow_tcp():
+    """Self-hosted vector server path — preferred for Neon Trader."""
+    import threading
+    import time
+
+    root = Path(__file__).parent.parent / "vendor" / "AhanaFlow"
+    sys.path.insert(0, str(root))
+    from backend.vector_server.server import VectorStateServerV2
+    from app.services.ahanaflow_memory import AhanaFlowMemory
+
+    wal = Path(tempfile.mkdtemp()) / "selfhost.wal"
+    srv = VectorStateServerV2(wal, host="127.0.0.1", port=19635)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    time.sleep(0.25)
+    try:
+        mem = AhanaFlowMemory(
+            collection="tim_selfhost",
+            dimensions=32,
+            mode="selfhosted",
+            host="127.0.0.1",
+            port=19635,
+        )
+        assert mem.stats()["mode"] == "selfhosted"
+        mem.remember("BUY SPY breakout", kind="decision", symbol="SPY")
+        hits = mem.search("SPY breakout", limit=2)
+        assert hits and "SPY" in hits[0].content
+        assert "AhanaFlow" in mem.recall_context("SPY")
+    finally:
+        srv.shutdown()

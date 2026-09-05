@@ -373,14 +373,18 @@ def render_tim_cockpit(funding_service=None, oauth_status: Optional[Dict] = None
 
         mem = strip.get("memory") or {}
         with st.expander("AhanaFlow memory (compressed RAG)"):
+            mode = mem.get("mode") or strip.get("memory_backend") or "—"
             st.write(
                 f"Backend: **{strip.get('memory_backend', '—')}** · "
+                f"mode **{mode}** · "
                 f"vectors **{strip.get('memory_vectors', 0)}** · "
                 f"WAL **{mem.get('wal_size_bytes', '—')}** bytes"
             )
             st.caption(
-                "Decisions and snipes land in AhanaFlow VectorStateEngineV2 "
-                "(https://www.ahanaflow.com). Query path uses compress_results for compact RAG."
+                "Preferred: self-hosted AhanaFlow vector server "
+                "(`./scripts/run_ahanaflow_selfhost.sh`). "
+                "Cloud/remote API reserved until Grok’s backend is live. "
+                "https://www.ahanaflow.com"
             )
             if decision and decision.get("memory_context"):
                 st.code(decision["memory_context"], language=None)

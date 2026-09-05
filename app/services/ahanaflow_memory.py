@@ -24,6 +24,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from .ahanaflow_governance import (
+    assert_safe_client_host,
+    clamp_dimensions,
+    clamp_scan_limit,
+    clamp_top_k,
+    default_ttl_seconds,
+    jail_wal_path,
+    validate_collection_name,
+    validate_item_id,
+)
+
 logger = logging.getLogger(__name__)
 
 TIM_COLLECTION = os.getenv("AHANAFLOW_COLLECTION", "tim_memory")
@@ -115,8 +126,8 @@ class AhanaFlowMemory:
         host: Optional[str] = None,
         port: Optional[int] = None,
     ) -> None:
-        self.collection = collection
-        self.dimensions = dimensions
+        self.collection = validate_collection_name(collection)
+        self.dimensions = clamp_dimensions(dimensions)
         self.engine = None
         self.client = None
         self._backend = "ahanaflow"
@@ -162,16 +173,7 @@ class AhanaFlowMemory:
         from .ahanaflow_vector_client import AhanaFlowVectorClient
 
         bind_host = host or os.getenv("AHANAFLOW_HOST", "127.0.0.1")
-        if bind_host in ("0.0.0.0", "::") and os.getenv("AHANAFLOW_ALLOW_PUBLIC", "").lower() not in (
-            "1",
-            "true",
-            "yes",
-        ):
-            logger.warning(
-                "AHANAFLOW_HOST=%s is public; prefer 127.0.0.1 for Neon Trader. "
-                "Set AHANAFLOW_ALLOW_PUBLIC=1 to silence.",
-                bind_host,
-            )
+        assert_safe_client_host(bind_host)
 
         self.client = AhanaFlowVectorClient(
             host=bind_host,
@@ -230,8 +232,10 @@ class AhanaFlowMemory:
             )
         from backend.vector_server.engine import VectorStateEngineV2  # type: ignore
 
-        root = Path(wal_path or os.getenv("AHANAFLOW_WAL", "./data/ahanaflow/tim_memory.wal"))
-        root.parent.mkdir(parents=True, exist_ok=True)
+        root = jail_wal_path(
+            wal_path or os.getenv("AHANAFLOW_WAL", "tim_memory.wal"),
+            root=Path(os.getenv("AHANAFLOW_DATA_ROOT", "data/ahanaflow")),
+        )
         self.engine = VectorStateEngineV2(root)
         self._ensure_collection()
         self._backend = "ahanaflow-embedded"
@@ -303,6 +307,7 @@ class AhanaFlowMemory:
         return list(raw or [])
 
     def _scan(self, limit: int) -> List[Dict[str, Any]]:
+        limit = clamp_scan_limit(limit)
         if self.client is not None:
             return self.client.scan(self.collection, limit=limit)
         assert self.engine is not None
@@ -338,7 +343,9 @@ class AhanaFlowMemory:
         content = (content or "").strip()
         if not content:
             raise ValueError("remember() requires non-empty content")
-        mid = memory_id or f"m_{uuid.uuid4().hex[:12]}"
+        if ttl_seconds is None:
+            ttl_seconds = default_ttl_seconds(kind)
+        mid = validate_item_id(memory_id or f"m_{uuid.uuid4().hex[:12]}")
         meta: Dict[str, Any] = {
             "kind": kind,
             "type": kind,
@@ -452,7 +459,7 @@ class AhanaFlowMemory:
         kind: Optional[str] = None,
         compress: bool = True,
     ) -> List[Any]:
-        k = int(top_k or limit or 5)
+        k = clamp_top_k(int(top_k or limit or 5))
         mt = kind or memory_type
         vector = _hash_embed(query, self.dimensions)
         try:
@@ -462,7 +469,20 @@ class AhanaFlowMemory:
                 compress=compress,
             )
         except Exception as e:
-            # Soft-fail so Tim keeps trading if memory blips
+            from .ahanaflow_vector_client import (
+                AhanaFlowAuthError,
+                AhanaFlowConnectionError,
+                AhanaFlowProtocolError,
+            )
+
+            # Soft-fail only transport blips — auth/protocol must surface
+            if isinstance(e, AhanaFlowAuthError):
+                raise
+            if isinstance(e, AhanaFlowProtocolError) and "api key" in str(e).lower():
+                raise
+            if isinstance(e, (AhanaFlowConnectionError, TimeoutError, OSError, ConnectionError)):
+                logger.warning("AhanaFlow search soft-failed (transport): %s", e)
+                return []
             logger.warning("AhanaFlow search soft-failed: %s", e)
             return []
         cutoff = None
@@ -485,7 +505,7 @@ class AhanaFlowMemory:
         return out
 
     def search_by_tags(self, tags: List[str], limit: int = 20) -> List[Any]:
-        rows = self._scan(max(limit * 5, 50))
+        rows = self._scan(clamp_scan_limit(max(limit * 5, 50)))
         tagset = set(tags or [])
         matched = []
         for row in rows:
@@ -493,22 +513,22 @@ class AhanaFlowMemory:
             row_tags = set(meta.get("tags") or [])
             if tagset & row_tags:
                 matched.append(self._hit_to_entry(row, score=1.0))
-            if len(matched) >= limit:
+            if len(matched) >= clamp_top_k(limit):
                 break
         return matched
 
     def get_recent_decisions(self, limit: int = 5) -> List[Any]:
-        rows = self._scan(max(limit * 10, 50))
+        rows = self._scan(clamp_scan_limit(max(limit * 10, 50)))
         decisions = [
             self._hit_to_entry(r, score=1.0)
             for r in rows
             if (r.get("metadata") or {}).get("kind") == "decision"
         ]
         decisions.sort(key=lambda m: m.timestamp, reverse=True)
-        return decisions[:limit]
+        return decisions[: clamp_top_k(limit)]
 
     def get_successful_trades(self, symbol: Optional[str] = None) -> List[Any]:
-        rows = self._scan(500)
+        rows = self._scan(clamp_scan_limit(500))
         out = []
         for r in rows:
             meta = r.get("metadata") or {}
@@ -520,7 +540,7 @@ class AhanaFlowMemory:
         return out
 
     def get_failed_trades(self, symbol: Optional[str] = None) -> List[Any]:
-        rows = self._scan(500)
+        rows = self._scan(clamp_scan_limit(500))
         out = []
         for r in rows:
             meta = r.get("metadata") or {}
@@ -532,7 +552,7 @@ class AhanaFlowMemory:
         return out
 
     def get_symbol_history(self, symbol: str) -> Dict[str, Any]:
-        rows = self._scan(500)
+        rows = self._scan(clamp_scan_limit(500))
         trades = []
         for r in rows:
             meta = r.get("metadata") or {}

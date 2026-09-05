@@ -102,7 +102,7 @@ class TimCopilot:
                     metadata=meta,
                 )
         except Exception as e:
-            logger.debug("remember decision failed: %s", e)
+            logger.warning("Tim remember decision failed: %s", e)
 
     def _recall_for(self, query: str, symbol: Optional[str] = None) -> str:
         if not self.memory:
@@ -119,7 +119,7 @@ class TimCopilot:
                 lines.append(f"- {str(text)[:160]}")
             return "\n".join(lines)
         except Exception as e:
-            logger.debug("recall failed: %s", e)
+            logger.warning("Tim recall failed: %s", e)
             return ""
 
     def extract_symbol(self, text: str) -> Optional[str]:
@@ -274,8 +274,8 @@ class TimCopilot:
                     tags=["tim", "snipe", "paper" if self.paper_mode else "live"],
                     metadata={"shares": shares, "price": price, "side": "BUY"},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Tim remember snipe failed: %s", e)
         self.history.append({"type": "snipe", "symbol": symbol, "shares": shares})
         return out
 

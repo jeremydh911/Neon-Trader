@@ -2,14 +2,11 @@
 """
 Production self-hosted AhanaFlow vector server for Neon Trader.
 
-- Binds 127.0.0.1 by default (set AHANAFLOW_ALLOW_PUBLIC=1 for 0.0.0.0)
-- Optional API-key auth via AHANAFLOW_API_KEY / AHANAFLOW_API_KEYS_FILE
-- Clean SIGTERM/SIGINT shutdown (flushes WAL)
-
-Usage:
-  ./scripts/run_ahanaflow_selfhost.sh
-  # or:
-  PYTHONPATH=vendor/AhanaFlow python3 scripts/ahanaflow_selfhost_server.py
+Governance:
+- Default bind 127.0.0.1
+- Public bind (0.0.0.0) REQUIRES auth + API key material
+- WAL path jailed under data/ahanaflow (or AHANAFLOW_DATA_ROOT)
+- Never logs API key material
 """
 
 from __future__ import annotations
@@ -23,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AHANA = ROOT / "vendor" / "AhanaFlow"
+sys.path.insert(0, str(ROOT))
 
 
 def _setup_path() -> None:
@@ -41,17 +39,24 @@ def main() -> int:
     from backend.universal_server.security import SecurityConfig, hash_api_key
     from backend.vector_server.server import VectorStateServerV2
 
+    from app.services.ahanaflow_governance import (
+        env_truthy,
+        is_public_bind,
+        jail_wal_path,
+    )
+
     parser = argparse.ArgumentParser(description="Neon Trader AhanaFlow self-host server")
     parser.add_argument(
         "--wal",
-        default=os.getenv("AHANAFLOW_WAL", str(ROOT / "data" / "ahanaflow" / "tim_memory.wal")),
+        default=os.getenv("AHANAFLOW_WAL", "tim_memory.wal"),
+        help="WAL filename or path under AHANAFLOW_DATA_ROOT",
     )
     parser.add_argument("--host", default=os.getenv("AHANAFLOW_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("AHANAFLOW_PORT", "9634")))
     parser.add_argument(
         "--require-auth",
         action="store_true",
-        default=os.getenv("AHANAFLOW_REQUIRE_AUTH", "").lower() in ("1", "true", "yes"),
+        default=env_truthy("AHANAFLOW_REQUIRE_AUTH"),
     )
     parser.add_argument(
         "--api-keys-file",
@@ -61,20 +66,38 @@ def main() -> int:
     args = parser.parse_args()
 
     host = args.host
-    allow_public = os.getenv("AHANAFLOW_ALLOW_PUBLIC", "").lower() in ("1", "true", "yes")
-    if host in ("0.0.0.0", "::", "[::]") and not allow_public:
+    allow_public = env_truthy("AHANAFLOW_ALLOW_PUBLIC")
+    public = is_public_bind(host)
+
+    if public and not allow_public:
         raise SystemExit(
             f"Refusing to bind {host} without AHANAFLOW_ALLOW_PUBLIC=1 "
             "(trade memory must not be exposed accidentally)."
         )
 
-    wal = Path(args.wal)
-    wal.parent.mkdir(parents=True, exist_ok=True)
-
-    security_config = None
     api_key = os.getenv("AHANAFLOW_API_KEY", "").strip()
     keys_file = (args.api_keys_file or "").strip()
-    if args.require_auth or api_key or keys_file:
+    require_auth = bool(args.require_auth or api_key or keys_file or public)
+
+    # Fail closed: public bind always needs real key material
+    if public and not (api_key or keys_file):
+        raise SystemExit(
+            "Public bind requires AHANAFLOW_API_KEY or --api-keys-file "
+            "(auth is mandatory when exposing the vector API)."
+        )
+    if require_auth and not (api_key or keys_file):
+        raise SystemExit(
+            "AHANAFLOW_REQUIRE_AUTH=1 but no AHANAFLOW_API_KEY / --api-keys-file provided."
+        )
+
+    data_root = Path(os.getenv("AHANAFLOW_DATA_ROOT", str(ROOT / "data" / "ahanaflow")))
+    try:
+        wal = jail_wal_path(args.wal, root=data_root)
+    except PermissionError as e:
+        raise SystemExit(str(e)) from e
+
+    security_config = None
+    if require_auth:
         security_config = SecurityConfig(
             enabled=True,
             require_auth=True,
@@ -95,7 +118,7 @@ def main() -> int:
     )
     if security_config and api_key and server._security is not None:
         server._security._api_keys.add(hash_api_key(api_key))
-        log.info("API key auth enabled (AHANAFLOW_API_KEY loaded)")
+        log.info("API key auth enabled (key loaded from env; value not logged)")
 
     def _shutdown(*_args: object) -> None:
         log.info("shutdown signal received")
@@ -108,11 +131,18 @@ def main() -> int:
     msg = (
         f"AhanaFlow vector server listening on {bound_host}:{bound_port}\n"
         f"WAL: {wal}\n"
-        f"Auth: {'required' if security_config else 'off (localhost dev)'} | "
+        f"Auth: {'REQUIRED' if security_config else 'off (loopback only)'} | "
         f"export AHANAFLOW_MODE=selfhosted AHANAFLOW_HOST={bound_host} AHANAFLOW_PORT={bound_port}\n"
     )
     print(msg, flush=True)
-    log.info("serving host=%s port=%s wal=%s", bound_host, bound_port, wal)
+    log.info(
+        "serving host=%s port=%s wal=%s auth=%s public=%s",
+        bound_host,
+        bound_port,
+        wal,
+        bool(security_config),
+        public,
+    )
     try:
         server.serve_forever()
     finally:

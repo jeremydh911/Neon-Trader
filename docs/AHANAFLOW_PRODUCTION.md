@@ -34,7 +34,12 @@ streamlit run app/main.py
 ## Hardening checklist
 
 - [ ] Bind `127.0.0.1` (script refuses `0.0.0.0` unless `AHANAFLOW_ALLOW_PUBLIC=1`)
-- [ ] Persist WAL on durable disk (`AHANAFLOW_WAL`)
+- [ ] Public bind **requires** `AHANAFLOW_API_KEY` or `--api-keys-file` (fail-closed)
+- [ ] Client refuses non-loopback hosts unless `AHANAFLOW_ALLOW_REMOTE=1`
+- [ ] WAL jailed under `AHANAFLOW_DATA_ROOT` (default `data/ahanaflow`) — no `..` escapes
+- [ ] Collection names validated (`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
+- [ ] Query caps: `AHANAFLOW_MAX_TOP_K` / `AHANAFLOW_MAX_SCAN`
+- [ ] Chat/discussion TTL via `AHANAFLOW_CHAT_TTL_SECONDS` (default 7d)
 - [ ] Enable API key auth if the host is shared: `AHANAFLOW_REQUIRE_AUTH=1` + `AHANAFLOW_API_KEY`
 - [ ] Run `python3 scripts/ahanaflow_healthcheck.py` from process supervisor / k8s probe
 - [ ] Run `python3 scripts/smoke_ahanaflow_prod.py` after deploys
@@ -54,13 +59,14 @@ AHANAFLOW_HOST=127.0.0.1 AHANAFLOW_PORT=9634 python3 scripts/ahanaflow_healthche
 python3 scripts/smoke_ahanaflow_prod.py
 
 # Unit / integration
-PYTHONPATH=. AHANAFLOW_MODE=embedded pytest tests/test_ahanaflow_memory.py -q
+PYTHONPATH=. AHANAFLOW_MODE=embedded pytest tests/test_ahanaflow_memory.py tests/test_ahanaflow_governance.py -q
 ```
 
 ## Failure behavior
 
 - **Search soft-fails** to `[]` on transport errors so Tim keeps trading
-- **Writes** raise (better to know memory is down than silently drop decisions)
+- **Auth / API-key failures** are **not** soft-failed (surface loudly)
+- **Writes** raise (better to know memory is down than silently drop decisions); Tim/chat log write failures at warning
 - **`auto` mode** falls back to embedded if selfhost is unreachable at boot
 
 ## Auth (optional)
@@ -75,3 +81,5 @@ export AHANAFLOW_API_KEY="$(openssl rand -hex 32)"
 ## Not production-ready yet (trading)
 
 AhanaFlow memory can be production-hardened for **desk memory**. Live capital still requires separate broker/fill/risk sign-off beyond this doc.
+
+No TLS on the NDJSON TCP wire — keep the server on loopback (or terminate TLS at a local reverse proxy if you must expose it).

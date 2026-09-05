@@ -149,7 +149,7 @@ class TraderChatAdapter:
                         tags=[intent, symbol] if symbol else [intent]
                     )
                 except Exception as e:
-                    logger.debug(f"Could not store in memory: {e}")
+                    logger.warning("Could not store in memory: %s", e)
             
             return {
                 "status": "success",
@@ -631,7 +631,7 @@ class CouncilChatAdapter:
                         tags=["council", "discussion"]
                     )
                 except Exception as e:
-                    logger.debug(f"Could not store in memory: {e}")
+                    logger.warning("Could not store council discussion in memory: %s", e)
             
             return {
                 "status": "success",

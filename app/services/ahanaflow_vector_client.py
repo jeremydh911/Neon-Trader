@@ -17,6 +17,15 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from .ahanaflow_governance import (
+    assert_safe_client_host,
+    clamp_dimensions,
+    clamp_scan_limit,
+    clamp_top_k,
+    validate_collection_name,
+    validate_item_id,
+)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = os.getenv("AHANAFLOW_HOST", "127.0.0.1")
@@ -24,6 +33,7 @@ DEFAULT_PORT = int(os.getenv("AHANAFLOW_PORT", "9634"))
 DEFAULT_TIMEOUT = float(os.getenv("AHANAFLOW_TIMEOUT", "5.0"))
 DEFAULT_RETRIES = int(os.getenv("AHANAFLOW_RETRIES", "3"))
 MAX_LINE_BYTES = int(os.getenv("AHANAFLOW_MAX_LINE_BYTES", str(2 * 1024 * 1024)))
+_UNSET = object()
 
 
 class AhanaFlowClientError(RuntimeError):
@@ -38,6 +48,10 @@ class AhanaFlowProtocolError(AhanaFlowClientError):
     """Bad response or command rejected by server."""
 
 
+class AhanaFlowAuthError(AhanaFlowProtocolError):
+    """Authentication / authorization failure (do not soft-fail)."""
+
+
 class AhanaFlowVectorClient:
     """Thread-safe NDJSON TCP client for AhanaFlow vector server."""
 
@@ -47,15 +61,20 @@ class AhanaFlowVectorClient:
         port: int = DEFAULT_PORT,
         *,
         timeout: float = DEFAULT_TIMEOUT,
-        api_key: Optional[str] = None,
+        api_key: Any = _UNSET,
         auto_reconnect: bool = True,
         retries: int = DEFAULT_RETRIES,
         connect_eager: bool = True,
     ) -> None:
+        assert_safe_client_host(host)
         self.host = host
         self.port = int(port)
         self.timeout = float(timeout)
-        self.api_key = api_key if api_key is not None else os.getenv("AHANAFLOW_API_KEY")
+        # Explicit None disables auth; omit arg to read AHANAFLOW_API_KEY
+        if api_key is _UNSET:
+            self.api_key = os.getenv("AHANAFLOW_API_KEY")
+        else:
+            self.api_key = api_key
         self.auto_reconnect = auto_reconnect
         self.retries = max(1, int(retries))
         self._sock: Optional[socket.socket] = None
@@ -174,6 +193,9 @@ class AhanaFlowVectorClient:
                     ok = bool(resp.get("ok"))
                     if not ok:
                         err = resp.get("error") or resp.get("message") or resp
+                        err_s = str(err).lower()
+                        if "api key" in err_s or "auth" in err_s or "unauthorized" in err_s:
+                            raise AhanaFlowAuthError(f"AhanaFlow {cmd} failed: {err}")
                         raise AhanaFlowProtocolError(f"AhanaFlow {cmd} failed: {err}")
                     return resp.get("result")
                 except (AhanaFlowConnectionError, OSError, TimeoutError) as e:
@@ -231,8 +253,8 @@ class AhanaFlowVectorClient:
         metric: str = "cosine",
         modality: str = "vector",
     ) -> None:
-        if not collection or dimensions <= 0:
-            raise AhanaFlowProtocolError("collection name and positive dimensions required")
+        collection = validate_collection_name(collection)
+        dimensions = clamp_dimensions(dimensions)
         self.request(
             "VECTOR_CREATE",
             collection=collection,
@@ -255,8 +277,8 @@ class AhanaFlowVectorClient:
         ttl_seconds: Optional[int] = None,
         expected_dimensions: Optional[int] = None,
     ) -> None:
-        if not item_id:
-            raise AhanaFlowProtocolError("item id required")
+        collection = validate_collection_name(collection)
+        item_id = validate_item_id(item_id)
         if not isinstance(vector, list) or not vector:
             raise AhanaFlowProtocolError("vector must be a non-empty float list")
         if expected_dimensions is not None and len(vector) != expected_dimensions:
@@ -287,6 +309,8 @@ class AhanaFlowVectorClient:
         strategy: str = "exact",
         expected_dimensions: Optional[int] = None,
     ) -> Any:
+        collection = validate_collection_name(collection)
+        top_k = clamp_top_k(top_k)
         if expected_dimensions is not None and len(vector) != expected_dimensions:
             raise AhanaFlowProtocolError(
                 f"query vector length {len(vector)} != expected dimensions {expected_dimensions}"
@@ -294,7 +318,7 @@ class AhanaFlowVectorClient:
         fields: Dict[str, Any] = {
             "collection": collection,
             "vector": [float(x) for x in vector],
-            "top_k": max(1, int(top_k)),
+            "top_k": top_k,
             "compress_results": bool(compress_results),
             "strategy": strategy,
         }
@@ -309,10 +333,12 @@ class AhanaFlowVectorClient:
         limit: int = 1000,
         include_vectors: bool = False,
     ) -> List[Dict[str, Any]]:
+        collection = validate_collection_name(collection)
+        limit = clamp_scan_limit(limit)
         result = self.request(
             "VECTOR_SCAN",
             collection=collection,
-            limit=max(1, int(limit)),
+            limit=limit,
             include_vectors=bool(include_vectors),
         )
         return list(result or [])

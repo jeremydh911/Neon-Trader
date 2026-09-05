@@ -2,6 +2,7 @@
 Thin TCP client for a self-hosted AhanaFlow VectorStateServerV2.
 
 Protocol: newline-delimited JSON over TCP (default 127.0.0.1:9634).
+Optional TLS (AHANAFLOW_TLS=1) — required for non-loopback / public exposure.
 Production defaults: localhost-only, reconnect with backoff, optional API key.
 
 Preferred Neon Trader path — trade memory stays on your box.
@@ -13,6 +14,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -22,8 +24,14 @@ from .ahanaflow_governance import (
     clamp_dimensions,
     clamp_scan_limit,
     clamp_top_k,
+    env_truthy,
     validate_collection_name,
     validate_item_id,
+)
+from .ahanaflow_tls import (
+    build_client_ssl_context,
+    tls_enabled,
+    tls_required_for_exposure,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +73,8 @@ class AhanaFlowVectorClient:
         auto_reconnect: bool = True,
         retries: int = DEFAULT_RETRIES,
         connect_eager: bool = True,
+        use_tls: Optional[bool] = None,
+        ssl_context: Optional[ssl.SSLContext] = None,
     ) -> None:
         assert_safe_client_host(host)
         self.host = host
@@ -77,6 +87,15 @@ class AhanaFlowVectorClient:
             self.api_key = api_key
         self.auto_reconnect = auto_reconnect
         self.retries = max(1, int(retries))
+        self.use_tls = tls_enabled(use_tls)
+        if tls_required_for_exposure(host=host) and not self.use_tls:
+            raise PermissionError(
+                f"AhanaFlow client requires TLS for non-loopback host {host!r}. "
+                "Set AHANAFLOW_TLS=1 (and CA/cert) or stay on 127.0.0.1."
+            )
+        self._ssl_context = ssl_context
+        if self.use_tls and self._ssl_context is None:
+            self._ssl_context = build_client_ssl_context()
         self._sock: Optional[socket.socket] = None
         self._lock = threading.RLock()
         self._closed = False
@@ -93,13 +112,28 @@ class AhanaFlowVectorClient:
         sock.settimeout(self.timeout)
         try:
             sock.connect((self.host, self.port))
-        except OSError as e:
-            sock.close()
+            if self.use_tls:
+                assert self._ssl_context is not None
+                server_hostname = self.host if self._ssl_context.check_hostname else None
+                sock = self._ssl_context.wrap_socket(
+                    sock, server_hostname=server_hostname
+                )
+        except (OSError, ssl.SSLError) as e:
+            try:
+                sock.close()
+            except OSError:
+                pass
             raise AhanaFlowConnectionError(
-                f"cannot connect to AhanaFlow at {self.host}:{self.port}: {e}"
+                f"cannot connect to AhanaFlow at {self.host}:{self.port}"
+                f"{' (TLS)' if self.use_tls else ''}: {e}"
             ) from e
         self._sock = sock
-        logger.info("AhanaFlow vector client connected %s:%s", self.host, self.port)
+        logger.info(
+            "AhanaFlow vector client connected %s:%s tls=%s",
+            self.host,
+            self.port,
+            self.use_tls,
+        )
 
     def _connect_with_retry(self) -> None:
         last: Optional[Exception] = None
@@ -234,6 +268,7 @@ class AhanaFlowVectorClient:
                 "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
                 "host": self.host,
                 "port": self.port,
+                "tls": bool(self.use_tls),
                 "stats": stats,
             }
         except Exception as e:
@@ -243,6 +278,7 @@ class AhanaFlowVectorClient:
                 "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
                 "host": self.host,
                 "port": self.port,
+                "tls": bool(self.use_tls),
             }
 
     def create_collection(

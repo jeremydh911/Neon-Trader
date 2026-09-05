@@ -180,6 +180,7 @@ class AhanaFlowMemory:
             port=int(port or os.getenv("AHANAFLOW_PORT", "9634")),
             api_key=os.getenv("AHANAFLOW_API_KEY"),
             retries=int(os.getenv("AHANAFLOW_RETRIES", "3")),
+            use_tls=None,  # honor AHANAFLOW_TLS / exposure policy
         )
         health = self.client.health()
         if not health.get("ok"):

@@ -13,15 +13,31 @@ fi
 
 export AHANAFLOW_HOST="${AHANAFLOW_HOST:-127.0.0.1}"
 export AHANAFLOW_PORT="${AHANAFLOW_PORT:-9634}"
-export AHANAFLOW_WAL="${AHANAFLOW_WAL:-$ROOT/data/ahanaflow/tim_memory.wal}"
+export AHANAFLOW_DATA_ROOT="${AHANAFLOW_DATA_ROOT:-$ROOT/data/ahanaflow}"
+export AHANAFLOW_WAL="${AHANAFLOW_WAL:-tim_memory.wal}"
 
-mkdir -p "$(dirname "$AHANAFLOW_WAL")"
+mkdir -p "$AHANAFLOW_DATA_ROOT"
 
-echo "Starting AhanaFlow self-host on ${AHANAFLOW_HOST}:${AHANAFLOW_PORT}"
-echo "WAL: ${AHANAFLOW_WAL}"
+EXTRA=()
+if [[ -n "${AHANAFLOW_REQUIRE_AUTH:-}" ]]; then
+  EXTRA+=(--require-auth)
+fi
+if [[ -n "${AHANAFLOW_API_KEYS_FILE:-}" ]]; then
+  EXTRA+=(--api-keys-file "$AHANAFLOW_API_KEYS_FILE")
+fi
+if [[ "${AHANAFLOW_TLS:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  EXTRA+=(--tls)
+  # Auto-generate self-signed certs if missing
+  if [[ ! -f "$AHANAFLOW_DATA_ROOT/tls/server.crt" ]]; then
+    echo "TLS enabled but certs missing — generating self-signed material..."
+    AHANAFLOW_DATA_ROOT="$AHANAFLOW_DATA_ROOT" "$ROOT/scripts/generate_ahanaflow_tls.sh"
+  fi
+fi
+
+echo "Starting AhanaFlow self-host on ${AHANAFLOW_HOST}:${AHANAFLOW_PORT} tls=${AHANAFLOW_TLS:-0}"
+echo "WAL: $AHANAFLOW_DATA_ROOT/$AHANAFLOW_WAL"
 exec python3 "$ROOT/scripts/ahanaflow_selfhost_server.py" \
   --host "$AHANAFLOW_HOST" \
   --port "$AHANAFLOW_PORT" \
   --wal "$AHANAFLOW_WAL" \
-  ${AHANAFLOW_REQUIRE_AUTH:+--require-auth} \
-  ${AHANAFLOW_API_KEYS_FILE:+--api-keys-file "$AHANAFLOW_API_KEYS_FILE"}
+  "${EXTRA[@]}"

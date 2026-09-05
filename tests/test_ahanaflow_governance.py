@@ -145,3 +145,115 @@ def test_auth_error_not_soft_failed_on_search():
         else:
             os.environ["AHANAFLOW_API_KEY"] = prev
         srv.shutdown()
+
+
+def test_tls_required_for_non_loopback():
+    from app.services.ahanaflow_tls import tls_required_for_exposure
+    from app.services.ahanaflow_vector_client import AhanaFlowVectorClient
+
+    assert tls_required_for_exposure(host="10.0.0.5") is True
+    assert tls_required_for_exposure(host="127.0.0.1") is False
+    os.environ["AHANAFLOW_ALLOW_REMOTE"] = "1"
+    os.environ.pop("AHANAFLOW_TLS", None)
+    try:
+        AhanaFlowVectorClient(host="10.0.0.5", port=9634, connect_eager=False, use_tls=False)
+        assert False, "expected PermissionError without TLS"
+    except PermissionError:
+        pass
+    finally:
+        os.environ.pop("AHANAFLOW_ALLOW_REMOTE", None)
+
+
+def test_tls_roundtrip_selfhosted():
+    """Self-signed TLS encrypts the NDJSON wire end-to-end."""
+    import subprocess
+
+    vendor = ROOT / "vendor" / "AhanaFlow"
+    sys.path.insert(0, str(vendor))
+    from backend.vector_server.server import VectorStateServerV2
+    from app.services.ahanaflow_tls import (
+        build_client_ssl_context,
+        build_server_ssl_context,
+        wrap_vector_server_tls,
+    )
+    from app.services.ahanaflow_vector_client import AhanaFlowVectorClient
+
+    data_root = Path(tempfile.mkdtemp())
+    os.environ["AHANAFLOW_DATA_ROOT"] = str(data_root)
+    os.environ["AHANAFLOW_TLS_CERT"] = "tls/server.crt"
+    os.environ["AHANAFLOW_TLS_KEY"] = "tls/server.key"
+    os.environ["AHANAFLOW_TLS_CA"] = "tls/server.crt"
+    os.environ.pop("AHANAFLOW_TLS_INSECURE", None)
+
+    proc = subprocess.run(
+        [str(ROOT / "scripts" / "generate_ahanaflow_tls.sh")],
+        env={**os.environ, "AHANAFLOW_DATA_ROOT": str(data_root)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert (data_root / "tls" / "server.crt").is_file()
+
+    wal = data_root / "tls_roundtrip.wal"
+    srv = VectorStateServerV2(wal, host="127.0.0.1", port=19640)
+    wrap_vector_server_tls(srv, build_server_ssl_context())
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    time.sleep(0.3)
+    try:
+        # Plain client must fail against TLS server
+        try:
+            AhanaFlowVectorClient(
+                host="127.0.0.1", port=19640, retries=1, use_tls=False
+            ).ping()
+            assert False, "plaintext client should fail against TLS server"
+        except Exception:
+            pass
+
+        client = AhanaFlowVectorClient(
+            host="127.0.0.1",
+            port=19640,
+            retries=1,
+            use_tls=True,
+            ssl_context=build_client_ssl_context(),
+        )
+        assert client.ping()
+        h = client.health()
+        assert h.get("ok") is True
+        assert h.get("tls") is True
+        client.create_collection("tls_test", 32)
+        client.upsert("tls_test", "m1", [0.1] * 32, payload={"text": "BUY NVDA TLS"})
+        hits = client.query("tls_test", [0.1] * 32, top_k=2)
+        assert hits
+        client.close()
+    finally:
+        srv.shutdown()
+
+
+def test_public_bind_without_tls_exits_when_key_present():
+    env = os.environ.copy()
+    env["AHANAFLOW_ALLOW_PUBLIC"] = "1"
+    env["AHANAFLOW_API_KEY"] = "public-needs-tls-too"
+    env.pop("AHANAFLOW_TLS", None)
+    env["PYTHONPATH"] = str(ROOT)
+    env["AHANAFLOW_DATA_ROOT"] = tempfile.mkdtemp()
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "ahanaflow_selfhost_server.py"),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "19698",
+            "--wal",
+            "gov_public_tls.wal",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert proc.returncode != 0
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    assert "TLS" in combined

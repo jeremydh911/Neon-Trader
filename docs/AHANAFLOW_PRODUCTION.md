@@ -34,8 +34,9 @@ streamlit run app/main.py
 ## Hardening checklist
 
 - [ ] Bind `127.0.0.1` (script refuses `0.0.0.0` unless `AHANAFLOW_ALLOW_PUBLIC=1`)
-- [ ] Public bind **requires** `AHANAFLOW_API_KEY` or `--api-keys-file` (fail-closed)
-- [ ] Client refuses non-loopback hosts unless `AHANAFLOW_ALLOW_REMOTE=1`
+- [ ] Public bind **requires** `AHANAFLOW_API_KEY` or `--api-keys-file` **and TLS** (fail-closed)
+- [ ] Client refuses non-loopback hosts unless `AHANAFLOW_ALLOW_REMOTE=1` (TLS mandatory off-loopback)
+- [ ] Enable TLS: `./scripts/generate_ahanaflow_tls.sh` then `AHANAFLOW_TLS=1`
 - [ ] WAL jailed under `AHANAFLOW_DATA_ROOT` (default `data/ahanaflow`) — no `..` escapes
 - [ ] Collection names validated (`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 - [ ] Query caps: `AHANAFLOW_MAX_TOP_K` / `AHANAFLOW_MAX_SCAN`
@@ -49,11 +50,15 @@ streamlit run app/main.py
 ## Ops commands
 
 ```bash
-# Start
+# Start (plaintext loopback)
 ./scripts/run_ahanaflow_selfhost.sh
 
+# Start with TLS (auto-generates self-signed certs if missing)
+AHANAFLOW_TLS=1 ./scripts/run_ahanaflow_selfhost.sh
+
 # Readiness (exit 0 = healthy)
-AHANAFLOW_HOST=127.0.0.1 AHANAFLOW_PORT=9634 python3 scripts/ahanaflow_healthcheck.py
+AHANAFLOW_HOST=127.0.0.1 AHANAFLOW_PORT=9634 AHANAFLOW_TLS=1 \
+  AHANAFLOW_TLS_CA=tls/server.crt python3 scripts/ahanaflow_healthcheck.py
 
 # Full smoke (spins ephemeral server if none listening)
 python3 scripts/smoke_ahanaflow_prod.py
@@ -78,8 +83,22 @@ export AHANAFLOW_API_KEY="$(openssl rand -hex 32)"
 # client side: same AHANAFLOW_API_KEY in Tim / Streamlit env
 ```
 
+## TLS
+
+```bash
+./scripts/generate_ahanaflow_tls.sh
+export AHANAFLOW_TLS=1
+export AHANAFLOW_TLS_CERT=tls/server.crt
+export AHANAFLOW_TLS_KEY=tls/server.key
+export AHANAFLOW_TLS_CA=tls/server.crt   # self-signed trust anchor
+AHANAFLOW_TLS=1 ./scripts/run_ahanaflow_selfhost.sh
+# Tim / Streamlit: same AHANAFLOW_TLS* exports
+```
+
+Public / remote exposure is fail-closed without TLS. Prefer a real CA or local reverse proxy for anything beyond desk loopback; self-signed is fine for `127.0.0.1`.
+
 ## Not production-ready yet (trading)
 
 AhanaFlow memory can be production-hardened for **desk memory**. Live capital still requires separate broker/fill/risk sign-off beyond this doc.
 
-No TLS on the NDJSON TCP wire — keep the server on loopback (or terminate TLS at a local reverse proxy if you must expose it).
+See also: `docs/TIM_TEAM_REVIEW.md` for team recommendations to keep Tim a happy bot.

@@ -4,7 +4,8 @@ Production self-hosted AhanaFlow vector server for Neon Trader.
 
 Governance:
 - Default bind 127.0.0.1
-- Public bind (0.0.0.0) REQUIRES auth + API key material
+- Public bind (0.0.0.0) REQUIRES auth + API key material + TLS
+- Optional TLS on loopback (AHANAFLOW_TLS=1)
 - WAL path jailed under data/ahanaflow (or AHANAFLOW_DATA_ROOT)
 - Never logs API key material
 """
@@ -44,6 +45,12 @@ def main() -> int:
         is_public_bind,
         jail_wal_path,
     )
+    from app.services.ahanaflow_tls import (
+        build_server_ssl_context,
+        tls_enabled,
+        tls_required_for_exposure,
+        wrap_vector_server_tls,
+    )
 
     parser = argparse.ArgumentParser(description="Neon Trader AhanaFlow self-host server")
     parser.add_argument(
@@ -63,11 +70,28 @@ def main() -> int:
         default=os.getenv("AHANAFLOW_API_KEYS_FILE", ""),
         help="File of SHA-256 hex API key hashes (one per line)",
     )
+    parser.add_argument(
+        "--tls",
+        action="store_true",
+        default=tls_enabled(),
+        help="Enable TLS (also set via AHANAFLOW_TLS=1)",
+    )
+    parser.add_argument(
+        "--tls-cert",
+        default=os.getenv("AHANAFLOW_TLS_CERT", "tls/server.crt"),
+        help="TLS certificate path under AHANAFLOW_DATA_ROOT",
+    )
+    parser.add_argument(
+        "--tls-key",
+        default=os.getenv("AHANAFLOW_TLS_KEY", "tls/server.key"),
+        help="TLS private key path under AHANAFLOW_DATA_ROOT",
+    )
     args = parser.parse_args()
 
     host = args.host
     allow_public = env_truthy("AHANAFLOW_ALLOW_PUBLIC")
     public = is_public_bind(host)
+    use_tls = bool(args.tls) or tls_required_for_exposure(host=host)
 
     if public and not allow_public:
         raise SystemExit(
@@ -79,11 +103,16 @@ def main() -> int:
     keys_file = (args.api_keys_file or "").strip()
     require_auth = bool(args.require_auth or api_key or keys_file or public)
 
-    # Fail closed: public bind always needs real key material
+    # Fail closed: public bind always needs real key material + TLS
     if public and not (api_key or keys_file):
         raise SystemExit(
             "Public bind requires AHANAFLOW_API_KEY or --api-keys-file "
             "(auth is mandatory when exposing the vector API)."
+        )
+    if public and not use_tls:
+        raise SystemExit(
+            "Public bind requires TLS. Set AHANAFLOW_TLS=1 and generate certs "
+            "(./scripts/generate_ahanaflow_tls.sh)."
         )
     if require_auth and not (api_key or keys_file):
         raise SystemExit(
@@ -91,6 +120,7 @@ def main() -> int:
         )
 
     data_root = Path(os.getenv("AHANAFLOW_DATA_ROOT", str(ROOT / "data" / "ahanaflow")))
+    os.environ.setdefault("AHANAFLOW_DATA_ROOT", str(data_root))
     try:
         wal = jail_wal_path(args.wal, root=data_root)
     except PermissionError as e:
@@ -110,12 +140,21 @@ def main() -> int:
     )
     log = logging.getLogger("ahanaflow.selfhost")
 
+    ssl_ctx = None
+    if use_tls:
+        try:
+            ssl_ctx = build_server_ssl_context(args.tls_cert, args.tls_key)
+        except FileNotFoundError as e:
+            raise SystemExit(str(e)) from e
+
     server = VectorStateServerV2(
         wal_path=wal,
         host=host,
         port=int(args.port),
         security_config=security_config,
     )
+    if ssl_ctx is not None:
+        wrap_vector_server_tls(server, ssl_ctx)
     if security_config and api_key and server._security is not None:
         server._security._api_keys.add(hash_api_key(api_key))
         log.info("API key auth enabled (key loaded from env; value not logged)")
@@ -131,17 +170,21 @@ def main() -> int:
     msg = (
         f"AhanaFlow vector server listening on {bound_host}:{bound_port}\n"
         f"WAL: {wal}\n"
+        f"TLS: {'ON' if use_tls else 'off'} | "
         f"Auth: {'REQUIRED' if security_config else 'off (loopback only)'} | "
-        f"export AHANAFLOW_MODE=selfhosted AHANAFLOW_HOST={bound_host} AHANAFLOW_PORT={bound_port}\n"
+        f"export AHANAFLOW_MODE=selfhosted AHANAFLOW_HOST={bound_host} "
+        f"AHANAFLOW_PORT={bound_port}"
+        f"{' AHANAFLOW_TLS=1' if use_tls else ''}\n"
     )
     print(msg, flush=True)
     log.info(
-        "serving host=%s port=%s wal=%s auth=%s public=%s",
+        "serving host=%s port=%s wal=%s auth=%s public=%s tls=%s",
         bound_host,
         bound_port,
         wal,
         bool(security_config),
         public,
+        use_tls,
     )
     try:
         server.serve_forever()
